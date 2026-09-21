@@ -35,6 +35,8 @@ Thumbs.db
 yandex-cookies*.txt
 cookies.txt
 
+cli/state/
+
 .gradle/
 *.hprof
 
