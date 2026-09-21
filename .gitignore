@@ -7,6 +7,7 @@ github_output/
 *.dylib
 app
 app.exe
+docs
 
 capture.txt
 capture.etl
