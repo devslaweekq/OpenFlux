@@ -11,15 +11,38 @@ See the [main README](../README.md) for client-side usage.
 
 ## Requirements
 
-- A Linux VPS (Ubuntu recommended) with [Docker](https://docs.docker.com/engine/install/) installed and the daemon running.
+- A Linux VPS (Ubuntu/Debian recommended). Docker is installed automatically if it's missing — see the `install` command below.
 - One document URL per client, created in advance by you (Yandex.Docs, Yandex Volga, Cups.online, or Mail.ru Docs — see
   [Transports](#transports)).
 
-## Quick start
+## One-line install (fresh VPS, no manual `git clone`)
+
+On a brand-new Ubuntu/Debian box, this single command fetches the repo, installs Docker if it's not already there, builds the exit-node
+image, and puts `openflux-ctl` on `PATH`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/devslaweekq/OpenFlux/feature/multi-accounting/cli/bootstrap.sh | bash
+```
+
+It clones into `~/openflux` by default and symlinks `openflux-ctl` into `/usr/local/bin` (asks for `sudo` when not run as root). Override
+with env vars if you need a different target, e.g. a different branch once this lands on `main`:
+
+```bash
+OPENFLUX_BRANCH=main OPENFLUX_INSTALL_DIR=/opt/openflux \
+  curl -fsSL https://raw.githubusercontent.com/devslaweekq/OpenFlux/feature/multi-accounting/cli/bootstrap.sh | bash
+```
+
+Re-running the same command later updates the existing checkout (`git fetch` + hard reset to the branch) and rebuilds the image — safe to
+use for upgrades too. After this, skip straight to `openflux-ctl add ...` below (no `./cli/` prefix or `cd` needed, since it's on `PATH`).
+
+Prefer to review the script before piping it into a shell? Download it first: `curl -fsSL .../cli/bootstrap.sh -o bootstrap.sh`, read it,
+then `bash bootstrap.sh`.
+
+## Quick start (repo already cloned)
 
 ```bash
 cd OpenFlux
-./cli/openflux-ctl install               # checks Docker, builds the exit-node image
+./cli/openflux-ctl install               # installs Docker if missing, builds the exit-node image
 ./cli/openflux-ctl add alice --transport=mailru --url='https://cloud.mail.ru/public/AAAA/1111'
 ./cli/openflux-ctl list                  # see every client's transport + url + status
 ./cli/openflux-ctl logs alice            # follow a client's container logs (Ctrl-C to stop)
@@ -32,9 +55,13 @@ cd OpenFlux
 
 One-time (or re-run anytime to rebuild after pulling new code) setup:
 
-1. Checks that `docker` is installed and the daemon is reachable — fails with an install link if not.
-2. Builds the exit-node image (`openflux-exit:local` by default) from this repo's root `Dockerfile`.
-3. If `--import <file>` is given, bulk-adds every client listed in that file (see [Bulk import](#bulk-import) below) right after the build.
+1. Checks whether `docker` is on `PATH`. If not, installs it automatically via Docker's official convenience script
+   (`curl -fsSL https://get.docker.com | sh`, via `sudo` when not already root) — no separate manual Docker install step needed. If that
+   script fails, or `sudo` isn't available, you get an actionable error pointing at the manual install docs.
+2. Confirms the Docker daemon is actually reachable (fails with a hint about the `docker` group / re-login if not — a fresh Docker install
+   can require starting a new shell session before your user's group membership takes effect).
+3. Builds the exit-node image (`openflux-exit:local` by default) from this repo's root `Dockerfile`.
+4. If `--import <file>` is given, bulk-adds every client listed in that file (see [Bulk import](#bulk-import) below) right after the build.
 
 ### `add <name> --transport=<yandex|vyandex|cupsonline|mailru> --url=<url>`
 

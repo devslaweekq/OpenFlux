@@ -105,6 +105,22 @@ bulk_import() {
   echo "import finished: all clients added"
 }
 
+install_docker() {
+  echo "docker not found on PATH -- installing via https://get.docker.com ..."
+  if [ "$(id -u)" = "0" ]; then
+    curl -fsSL https://get.docker.com | sh \
+      || die "automatic Docker install failed. Install it manually: https://docs.docker.com/engine/install/"
+  else
+    command -v sudo >/dev/null 2>&1 \
+      || die "docker is not installed and sudo is not available to install it. Install Docker manually: https://docs.docker.com/engine/install/"
+    curl -fsSL https://get.docker.com | sudo sh \
+      || die "automatic Docker install failed. Install it manually: https://docs.docker.com/engine/install/"
+  fi
+  command -v docker >/dev/null 2>&1 \
+    || die "Docker's install script finished but 'docker' is still not on PATH -- check the output above, or install manually: https://docs.docker.com/engine/install/"
+  echo "docker installed"
+}
+
 cmd_install() {
   local import_file=""
   while [ "$#" -gt 0 ]; do
@@ -117,10 +133,10 @@ cmd_install() {
   done
 
   if ! command -v docker >/dev/null 2>&1; then
-    die "docker is not installed. Install it first: https://docs.docker.com/engine/install/"
+    install_docker
   fi
   if ! docker info >/dev/null 2>&1; then
-    die "docker daemon is not reachable (is it running? do you have permission?)"
+    die "docker daemon is not reachable (you may need to log out and back in for the new 'docker' group membership to apply, or run as root/with sudo)"
   fi
 
   echo "building $IMAGE_NAME from $REPO_ROOT ..."

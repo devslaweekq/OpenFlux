@@ -98,6 +98,39 @@ case "$1" in
 esac
 EOF
   chmod +x "$STUB_BIN/docker"
+
+  # Stubs for install_docker()'s auto-install path. curl logs its args and
+  # exits (${DOCKER_CURL_EXIT:-0}); it never actually fetches/installs
+  # anything real, so a scenario where docker is genuinely absent stays
+  # absent after the "install" -- exactly what the tests below check for.
+  cat > "$STUB_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "$DOCKER_LOG"
+exit "${DOCKER_CURL_EXIT:-0}"
+EOF
+  chmod +x "$STUB_BIN/curl"
+
+  # sudo logs its args then runs the command directly (no real privilege
+  # escalation -- this is a test double, not a security boundary).
+  cat > "$STUB_BIN/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >> "$DOCKER_LOG"
+exec "$@"
+EOF
+  chmod +x "$STUB_BIN/sudo"
+
+  # id -u reports $FAKE_UID (default 1000, i.e. non-root) so tests can
+  # exercise both the root and non-root branches of install_docker().
+  cat > "$STUB_BIN/id" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "-u" ]; then
+  echo "${FAKE_UID:-1000}"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$STUB_BIN/id"
+
   export PATH="$STUB_BIN:$PATH"
 }
 
@@ -312,6 +345,69 @@ case "$docker_call" in
   *"info"*"build -t openflux-exit:local"*) assert_eq "cmd_install checks docker info before building" "ok" "ok" ;;
   *) assert_eq "cmd_install checks docker info before building" "ok" "$docker_call" ;;
 esac
+teardown_fixture
+
+setup_fixture
+out="$(cmd_install)"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *curl*) assert_eq "cmd_install skips install_docker when docker is already present" "no curl" "$docker_call" ;;
+  *) assert_eq "cmd_install skips install_docker when docker is already present" "no curl" "no curl" ;;
+esac
+teardown_fixture
+
+setup_fixture
+rm -f "$STUB_BIN/docker"
+export FAKE_UID=1000
+status=0
+# install_docker's failure path (docker still missing after the "install")
+# calls die(), which calls exit; run in a subshell for the same reason as
+# the docker-daemon-unreachable test below.
+( cmd_install ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_install (docker missing, non-root) fails once install script leaves docker absent" "1" "$status"
+docker_call="$(cat "$DOCKER_LOG")"
+# curl and `sudo sh` are two ends of a pipeline (curl ... | sudo sh) -- they
+# run as concurrent processes, so their log lines can land in either order.
+# Check both substrings independently rather than requiring one order.
+if echo "$docker_call" | grep -qF "curl -fsSL https://get.docker.com" \
+  && echo "$docker_call" | grep -qF "sudo sh"; then
+  assert_eq "cmd_install (docker missing, non-root) installs via curl|sudo sh" "ok" "ok"
+else
+  assert_eq "cmd_install (docker missing, non-root) installs via curl|sudo sh" "ok" "$docker_call"
+fi
+unset FAKE_UID
+teardown_fixture
+
+setup_fixture
+rm -f "$STUB_BIN/docker"
+export FAKE_UID=0
+status=0
+( cmd_install ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_install (docker missing, root) fails once install script leaves docker absent" "1" "$status"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *sudo*)
+    assert_eq "cmd_install (docker missing, root) does not use sudo" "no sudo" "$docker_call" ;;
+  *"curl -fsSL https://get.docker.com"*)
+    assert_eq "cmd_install (docker missing, root) does not use sudo" "no sudo" "no sudo" ;;
+  *)
+    assert_eq "cmd_install (docker missing, root) does not use sudo" "no sudo" "$docker_call" ;;
+esac
+unset FAKE_UID
+teardown_fixture
+
+setup_fixture
+rm -f "$STUB_BIN/docker"
+export DOCKER_CURL_EXIT=1
+status=0
+( cmd_install ) >/dev/null 2>"$TMPDIR_TEST/install-err.log" || status=$?
+err="$(cat "$TMPDIR_TEST/install-err.log")"
+assert_eq "cmd_install reports a clear error when the docker install script itself fails" "1" "$status"
+case "$err" in
+  *"automatic Docker install failed"*) assert_eq "cmd_install install-failure message is actionable" "ok" "ok" ;;
+  *) assert_eq "cmd_install install-failure message is actionable" "ok" "$err" ;;
+esac
+unset DOCKER_CURL_EXIT
 teardown_fixture
 
 setup_fixture
