@@ -93,6 +93,12 @@ bob          yandex     running    https://docs.yandex.ru/docs/view?url=...     
 Follows (`docker logs -f`) the given client's container — useful for confirming a client actually connected (look for an auth-success line
 for the transport in use) or diagnosing why one isn't.
 
+### `upgrade [--no-build]`
+
+Rebuilds the exit-node image (skipped with `--no-build`) and recreates every client container that is still running an older image, using
+the settings from the state file. Containers already on the current image are left alone. Re-running the one-line bootstrap does this
+automatically. Expect a brief reconnect for each recreated client.
+
 ## Bulk import
 
 Point `install --import <file>` at a CSV file to provision many clients in one shot — handy for a first-time setup where you already have a

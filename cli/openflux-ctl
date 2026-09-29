@@ -16,6 +16,7 @@ Commands:
   remove <name>                            Remove a client (stops its container, forgets its config)
   list                                     List all clients: transport, status, url
   logs <name>                              Follow logs for a client's container
+  upgrade [--no-build]                     Rebuild the image and recreate containers still on an older one
 
 Transports: yandex, vyandex, cupsonline, mailru
 USAGE
@@ -148,6 +149,14 @@ cmd_install() {
   fi
 }
 
+run_container() {
+  local container="$1" transport="$2" url="$3"
+  docker run -d --name "$container" --restart unless-stopped \
+    --cap-add NET_RAW --cap-add NET_ADMIN \
+    -e ROLE=exit-node -e TRANSPORT="$transport" -e URL="$url" \
+    "$IMAGE_NAME" >/dev/null
+}
+
 cmd_add() {
   local name="" transport="" url="" args=()
   while [ "$#" -gt 0 ]; do
@@ -179,10 +188,7 @@ cmd_add() {
     die "a docker container named '$container' already exists (state file may be out of sync)"
   fi
 
-  docker run -d --name "$container" --restart unless-stopped \
-    --cap-add NET_RAW --cap-add NET_ADMIN \
-    -e ROLE=exit-node -e TRANSPORT="$transport" -e URL="$url" \
-    "$IMAGE_NAME" >/dev/null || die "failed to start container '$container'"
+  run_container "$container" "$transport" "$url" || die "failed to start container '$container'"
 
   record_client "$name" "$transport" "$url" "$container"
   echo "added client '$name' -> $transport $url ($container)"
@@ -231,6 +237,47 @@ cmd_logs() {
   exec docker logs -f "$container"
 }
 
+cmd_upgrade() {
+  local build=1
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-build) build=0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  docker info >/dev/null 2>&1 || die "docker daemon is not reachable"
+  if [ "$build" = "1" ]; then
+    echo "building $IMAGE_NAME from $REPO_ROOT ..."
+    docker build -t "$IMAGE_NAME" "$REPO_ROOT"
+  fi
+  ensure_state_file
+
+  local current
+  current="$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME")" || die "image '$IMAGE_NAME' not found -- run 'openflux-ctl install' first"
+
+  local name transport url container created running updated=0 failed=0
+  while IFS=$'\t' read -r name transport url container created; do
+    running="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || true)"
+    if [ "$running" = "$current" ]; then
+      echo "up to date: $name"
+      continue
+    fi
+    echo "recreating $name ($container) on the new image ..."
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    if run_container "$container" "$transport" "$url"; then
+      updated=$((updated + 1))
+    else
+      echo "error: failed to start container '$container'" >&2
+      failed=$((failed + 1))
+    fi
+  done < <(awk -F'\t' '!/^#/ && NF' "$STATE_FILE")
+
+  echo "upgrade done: $updated recreated, $failed failed"
+  [ "$failed" = "0" ] || return 1
+}
+
 main() {
   local cmd="${1:-}"
   if [ "$#" -gt 0 ]; then shift; fi
@@ -240,6 +287,7 @@ main() {
     remove) cmd_remove "$@" ;;
     list) cmd_list "$@" ;;
     logs) cmd_logs "$@" ;;
+    upgrade) cmd_upgrade "$@" ;;
     -h|--help|help)
       usage
       exit 0

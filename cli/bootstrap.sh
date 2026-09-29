@@ -50,6 +50,9 @@ fi
 echo "running openflux-ctl install ..."
 "$INSTALL_DIR/cli/openflux-ctl" install
 
+echo "recreating existing clients on the fresh image ..."
+"$INSTALL_DIR/cli/openflux-ctl" upgrade --no-build
+
 if [ "$SYMLINK_TARGET" != "-" ]; then
   echo "linking $SYMLINK_TARGET -> $INSTALL_DIR/cli/openflux-ctl ..."
   as_root ln -sf "$INSTALL_DIR/cli/openflux-ctl" "$SYMLINK_TARGET"
