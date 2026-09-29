@@ -31,10 +31,12 @@ setup_fixture() {
   export STATE_FILE="$OPENFLUX_STATE_FILE"
   export DOCKER_LOG="$TMPDIR_TEST/docker.log"
   export CONTAINERS_FILE="$TMPDIR_TEST/containers"
+  export IMAGES_FILE="$TMPDIR_TEST/images"
   mkdir -p "$TMPDIR_TEST/state"
   : > "$OPENFLUX_STATE_FILE"
   : > "$DOCKER_LOG"
   : > "$CONTAINERS_FILE"
+  : > "$IMAGES_FILE"
 
   STUB_BIN="$TMPDIR_TEST/bin"
   mkdir -p "$STUB_BIN"
@@ -62,21 +64,30 @@ case "$1" in
       exit "${DOCKER_RUN_EXIT_CODE:-1}"
     fi
     [ -n "$name" ] && echo "$name" >> "$CONTAINERS_FILE"
+    [ -n "$name" ] && echo "$name sha-new" >> "$IMAGES_FILE"
     exit 0
     ;;
   rm)
     for a in "$@"; do
       case "$a" in
         -*) ;;
-        *) sed -i "/^$a\$/d" "$CONTAINERS_FILE" 2>/dev/null || true ;;
+        *) sed -i "/^$a\$/d" "$CONTAINERS_FILE" 2>/dev/null || true
+           sed -i "/^$a /d" "$IMAGES_FILE" 2>/dev/null || true ;;
       esac
     done
+    exit 0
+    ;;
+  image)
+    [ "$2" = "inspect" ] || exit 0
+    [ "${DOCKER_IMAGE_EXIT:-0}" = "0" ] || exit "$DOCKER_IMAGE_EXIT"
+    echo "sha-new"
     exit 0
     ;;
   inspect)
     target="${@: -1}"
     if grep -qxF "$target" "$CONTAINERS_FILE" 2>/dev/null; then
       case "$*" in
+        *".Image"*) awk -v n="$target" '$1==n {print $2}' "$IMAGES_FILE" ;;
         *"-f "*) echo "${DOCKER_INSPECT_STATUS:-running}" ;;
       esac
       exit 0
@@ -502,6 +513,92 @@ case "$recorded_url" in
 esac
 assert_eq "bulk_import CRLF-stripped URL matches expected value" \
   "https://example.com/a" "$recorded_url"
+teardown_fixture
+
+# --- cmd_upgrade ---
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+cmd_add bob --transport=yandex --url=https://example.com/2 >/dev/null
+sed -i 's/^openflux-bob sha-new$/openflux-bob sha-old/' "$IMAGES_FILE"
+: > "$DOCKER_LOG"
+out="$(cmd_upgrade --no-build)"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$out" in
+  *"up to date: alice"*) assert_eq "cmd_upgrade skips a container already on the current image" "ok" "ok" ;;
+  *) assert_eq "cmd_upgrade skips a container already on the current image" "ok" "$out" ;;
+esac
+case "$docker_call" in
+  *"rm -f openflux-alice"*) assert_eq "cmd_upgrade does not touch an up-to-date container" "untouched" "removed" ;;
+  *) assert_eq "cmd_upgrade does not touch an up-to-date container" "untouched" "untouched" ;;
+esac
+case "$docker_call" in
+  *"rm -f openflux-bob"*"run -d --name openflux-bob"*"-e TRANSPORT=yandex -e URL=https://example.com/2"*)
+    assert_eq "cmd_upgrade recreates a stale container with its stored transport/url" "ok" "ok" ;;
+  *) assert_eq "cmd_upgrade recreates a stale container with its stored transport/url" "ok" "$docker_call" ;;
+esac
+case "$docker_call" in
+  *build*) assert_eq "cmd_upgrade --no-build skips docker build" "no build" "built" ;;
+  *) assert_eq "cmd_upgrade --no-build skips docker build" "no build" "no build" ;;
+esac
+assert_eq "cmd_upgrade reports the recreated count" "upgrade done: 1 recreated, 0 failed" "$(echo "$out" | tail -n 1)"
+assert_eq "cmd_upgrade leaves the recreated container on the current image" "openflux-bob sha-new" "$(grep '^openflux-bob ' "$IMAGES_FILE")"
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+: > "$DOCKER_LOG"
+cmd_upgrade >/dev/null
+case "$(cat "$DOCKER_LOG")" in
+  *"build -t openflux-exit:local"*) assert_eq "cmd_upgrade builds the image by default" "ok" "ok" ;;
+  *) assert_eq "cmd_upgrade builds the image by default" "ok" "$(cat "$DOCKER_LOG")" ;;
+esac
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+sed -i 's/ sha-new$/ sha-old/' "$IMAGES_FILE"
+sed -i '/^openflux-alice$/d' "$CONTAINERS_FILE"
+out="$(cmd_upgrade --no-build)"
+if grep -qxF "openflux-alice" "$CONTAINERS_FILE"; then
+  assert_eq "cmd_upgrade recreates a missing container" "recreated" "recreated"
+else
+  assert_eq "cmd_upgrade recreates a missing container" "recreated" "still missing"
+fi
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+cmd_add bob --transport=mailru --url=https://example.com/2 >/dev/null
+sed -i 's/ sha-new$/ sha-old/' "$IMAGES_FILE"
+export DOCKER_RUN_FAIL_NAME="openflux-alice"
+status=0
+out="$(cmd_upgrade --no-build 2>&1)" || status=$?
+unset DOCKER_RUN_FAIL_NAME
+assert_eq "cmd_upgrade exits 1 when a container fails to start" "1" "$status"
+assert_eq "cmd_upgrade keeps going after a failure and reports counts" "upgrade done: 1 recreated, 1 failed" "$(echo "$out" | tail -n 1)"
+teardown_fixture
+
+setup_fixture
+export DOCKER_IMAGE_EXIT=1
+status=0
+( cmd_upgrade --no-build ) >/dev/null 2>&1 || status=$?
+unset DOCKER_IMAGE_EXIT
+assert_eq "cmd_upgrade fails when the image does not exist" "1" "$status"
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_upgrade --bogus ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_upgrade rejects unknown options" "1" "$status"
+teardown_fixture
+
+# --- symlink invocation ---
+
+setup_fixture
+ln -s "$SCRIPT_DIR/openflux-ctl" "$TMPDIR_TEST/openflux-ctl-link"
+resolved="$(bash -c 'source "$1"; echo "$SCRIPT_DIR"' _ "$TMPDIR_TEST/openflux-ctl-link")"
+assert_eq "openflux-ctl resolves SCRIPT_DIR through a symlink" "$SCRIPT_DIR" "$resolved"
 teardown_fixture
 
 echo
