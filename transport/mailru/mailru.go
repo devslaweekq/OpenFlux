@@ -76,6 +76,81 @@ func (s *DocSession) safeWrite(messageType int, data []byte) error {
 // docWriteTimeout bounds one WebSocket write to the document.
 const docWriteTimeout = 20 * time.Second
 
+const mailruSocketIOHandshakeTimeout = 15 * time.Second
+
+// waitMailruSocketIO completes the Engine.IO / Socket.IO handshake before
+// editor authentication is sent. Mail.ru currently requires the Engine.IO
+// open frame to be consumed before the Socket.IO connect packet is sent.
+func waitMailruSocketIO(session *DocSession, token string) error {
+	if session == nil || session.Conn == nil {
+		return fmt.Errorf("mailru: websocket session is nil")
+	}
+
+	conn := session.Conn
+
+	if err := conn.SetReadDeadline(time.Now().Add(mailruSocketIOHandshakeTimeout)); err != nil {
+		return fmt.Errorf("mailru: set handshake deadline: %w", err)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	waitFor := func(match func(string) bool) error {
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return err
+			}
+
+			if messageType != websocket.TextMessage {
+				continue
+			}
+
+			text := string(payload)
+
+			// Engine.IO heartbeat may arrive while handshaking.
+			if text == "2" {
+				if err := session.safeWrite(websocket.TextMessage, []byte("3")); err != nil {
+					return fmt.Errorf("mailru: send Engine.IO pong: %w", err)
+				}
+				continue
+			}
+
+			if match(text) {
+				return nil
+			}
+
+			utils.Debugf("[M-DOCS] handshake: ignoring server frame %q", text)
+		}
+	}
+
+	// Engine.IO open:
+	//   0{"sid":"...", ...}
+	if err := waitFor(func(text string) bool {
+		return strings.HasPrefix(text, "0{")
+	}); err != nil {
+		return fmt.Errorf("mailru: wait for Engine.IO open: %w", err)
+	}
+
+	utils.Debugf("[M-DOCS] Engine.IO open")
+
+	socketConnect := fmt.Sprintf(`40{"token":"%s"}`, token)
+
+	if err := session.safeWrite(websocket.TextMessage, []byte(socketConnect)); err != nil {
+		return fmt.Errorf("mailru: send Socket.IO connect: %w", err)
+	}
+
+	// Socket.IO acknowledgement:
+	//   40{"sid":"..."}
+	if err := waitFor(func(text string) bool {
+		return strings.HasPrefix(text, "40")
+	}); err != nil {
+		return fmt.Errorf("mailru: wait for Socket.IO connect: %w", err)
+	}
+
+	utils.Debugf("[M-DOCS] Socket.IO connected")
+
+	return nil
+}
+
 type MailruDocsTransport struct {
 	*transport.BaseTransport
 
@@ -87,6 +162,12 @@ type MailruDocsTransport struct {
 
 	cookieJar *cookiejar.Jar
 	jarMu     sync.RWMutex
+
+	// reconnecting is set while a scheduled reconnect waits out its backoff:
+	// the reader's error and ApplyCookies both schedule one when the cookies
+	// are replaced under a live connection, and two reconnects open two
+	// sessions to the document.
+	reconnecting atomic.Bool
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -224,6 +305,13 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			UserID:     userID,
 		}
 
+		if err := waitMailruSocketIO(session, info.Token); err != nil {
+			utils.Debugf("[M-DOCS] Socket.IO handshake failed: %v", err)
+			_ = conn.Close()
+			t.scheduleReconnect(attempt)
+			return
+		}
+
 		t.Mu.Lock()
 		t.session = session
 		t.SetConnected(true)
@@ -232,10 +320,6 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		if existingSession == nil {
 			utils.SafeGo("mailru.writer", t.writerLoop)
 		}
-
-		// Auth - fired immediately, same as the Yandex.Docs transport.
-		auth1 := fmt.Sprintf(`40{"token":"%s"}`, info.Token)
-		session.safeWrite(websocket.TextMessage, []byte(auth1))
 
 		authMsg := map[string]interface{}{
 			"type":                "auth",
@@ -396,11 +480,25 @@ func (t *MailruDocsTransport) editorActivityLoop() {
 			continue
 		}
 
+		// A link that only lets the document be read ("edit": false) is not allowed to save: the
+		// server closes the connection (no close frame) on the first saveChanges, over and over.
+		if !canEdit(session.Info.Permissions) {
+			continue
+		}
+
 		msg := buildSaveChanges(session)
 		if err := session.safeWrite(websocket.TextMessage, msg); err != nil {
 			utils.Debugf("[M-DOCS] saveChanges write error: %v", err)
 		}
 	}
+}
+
+// canEdit says whether the document may be edited through the link this session joined with.
+// The server reports it in the document's permissions; a document that does not say is treated
+// as editable, as the transport always did.
+func canEdit(permissions map[string]interface{}) bool {
+	edit, ok := permissions["edit"].(bool)
+	return !ok || edit
 }
 
 // buildSaveChanges собирает saveChanges-сообщение под конкретную сессию:
@@ -413,6 +511,13 @@ func buildSaveChanges(session *DocSession) []byte {
 	if userID == "" {
 		userID = session.UserID
 	}
+	return BuildSaveChanges(userID)
+}
+
+// BuildSaveChanges is the saveChanges message for one participant: a pure
+// function of the user id, exported so the JS port of this transport can be
+// compared with it byte for byte.
+func BuildSaveChanges(userID string) []byte {
 	short := userID
 	if len(short) > 1 {
 		short = short[:len(short)-1]
@@ -453,7 +558,11 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 
 // cursorPayloads returns the base64 payload of every cursor entry in a server
 // message, in order, without the keep-alive entries.
-func cursorPayloads(text string) []string {
+func cursorPayloads(text string) []string { return CursorPayloads(text) }
+
+// CursorPayloads is the exported form of cursorPayloads (pure; the JS port is
+// compared with it in tests).
+func CursorPayloads(text string) []string {
 	var out []string
 	for _, m := range cursorPayloadRe.FindAllStringSubmatch(text, -1) {
 		if len(m) > 1 && m[1] != "---KA---" {
@@ -469,9 +578,13 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 		return
 	}
 
+	if !t.reconnecting.CompareAndSwap(false, true) {
+		return // one is already waiting
+	}
 	d := reconnectBackoff(next)
 	utils.Debugf("[M-DOCS] reconnecting in %v (attempt %d)", d, next)
 	time.Sleep(d)
+	t.reconnecting.Store(false) // a failed connect schedules the next one itself
 	if !t.IsRunning() {
 		return
 	}
