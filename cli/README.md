@@ -9,11 +9,21 @@ point-to-point pipe, so one document can only ever serve one client — this too
 you hand them a `transport` + `url` pair (see [`list`](#list)) and they run `openflux --role=client --transport=<t> --url=<url>` themselves.
 See the [main README](../README.md) for client-side usage.
 
+Not the only way to run multiple isolated nodes: the project also ships an official, non-Docker path for this —
+[`deploy/node-install.sh`](../deploy/node-install.sh) installs each client as its own systemd service with a prioritized multi-transport
+Session (see [docs/node-provisioning.md](../docs/node-provisioning.md)). Prefer `openflux-ctl` if you want Docker-level isolation and a
+simple one-transport-per-client model; prefer `node-install.sh` if you want the maintainer's own tested path with failover between several
+transports per client.
+
 ## Requirements
 
 - A Linux VPS (Ubuntu/Debian recommended). Docker is installed automatically if it's missing — see the `install` command below.
 - One document URL per client, created in advance by you (Yandex.Docs, Yandex Volga, Cups.online, or Mail.ru Docs — see
-  [Transports](#transports)).
+  [Transports](#transports)). **Share it with edit access, not view-only** — `mailru` in particular cannot carry any traffic over a
+  view-only link (see [docs/transports.md](../docs/transports.md#mailru-docs-needs-an-editable-link)): it connects and authenticates fine,
+  then every data/keep-alive write gets silently rejected and it just reconnects forever with no traffic ever passing. If a client doesn't
+  come up, run `openflux-ctl logs <name>` and look for `Auth OK` immediately followed by repeated reconnects — that's the tell; there's no
+  separate error line for it yet.
 
 ## One-line install (fresh VPS, no manual `git clone`)
 
@@ -121,9 +131,21 @@ rebuilds the image too, which is harmless but adds a few seconds).
 
 ## Transports
 
-`add`/bulk-import support the four transports that authenticate via a plain document URL: `yandex`, `vyandex`, `cupsonline`, `mailru`.
-(`oneme`/MAX is not supported here — it authenticates via a token + user id pair instead of a URL, so it doesn't fit this tool's per-client
-model. Run it directly with the `openflux` binary if you need it — see the [main README](../README.md).)
+`add`/bulk-import support the five transports that authenticate via a plain document/room URL: `yandex`, `vyandex`, `cupsonline`, `mailru`,
+`telemost` (Yandex Telemost — experimental upstream, see [docs/transports.md](../docs/transports.md)).
+
+Not supported here: `oneme`/MAX (authenticates via a token + user id pair instead of a URL — doesn't fit this tool's per-client model) and
+`boards`/`direct`/`script` (need structured parameters beyond a single URL, only available through the binary's `--transports=`/`--config`
+Session mode). Run any of these directly with the `openflux` binary if you need them — see
+[docs/cli-reference.md](../docs/cli-reference.md).
+
+## Exit mode
+
+Every client runs in `l3` mode by default (raw-socket forwarding — faster, single end-to-end TCP connection) — every container
+`openflux-ctl` creates gets `--cap-add NET_RAW --cap-add NET_ADMIN` for this. `docker/entrypoint.sh` installs the kernel-RST-drop rule
+automatically, scoped to that one container's network namespace. `l4` (unprivileged, works everywhere, no raw sockets) is available by
+setting `MODE=l4` if you run a container directly (e.g. via `docker-compose.yml`), but `openflux-ctl`'s own `add`/`rekey`/`upgrade` don't
+expose a per-client `--mode` switch yet — every client they manage runs `l3`.
 
 ## State and security
 

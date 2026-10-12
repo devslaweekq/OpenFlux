@@ -163,6 +163,11 @@ if validate_transport oneme; then
 else
   assert_eq "validate_transport rejects oneme" "no" "no"
 fi
+if validate_transport telemost; then
+  assert_eq "validate_transport accepts telemost" "yes" "yes"
+else
+  assert_eq "validate_transport accepts telemost" "yes" "no"
+fi
 
 if validate_name "alice-1"; then
   assert_eq "validate_name accepts alice-1" "yes" "yes"
@@ -210,18 +215,34 @@ teardown_fixture
 
 setup_fixture
 out="$(cmd_add alice --transport=mailru --url=https://cloud.mail.ru/public/AAAA/1111)"
+first_line="$(printf '%s\n' "$out" | sed -n '1p')"
+key_line="$(printf '%s\n' "$out" | tail -n1)"
 assert_eq "cmd_add prints confirmation" \
-  "added client 'alice' -> mailru https://cloud.mail.ru/public/AAAA/1111 (openflux-alice)" "$out"
+  "added client 'alice' -> mailru https://cloud.mail.ru/public/AAAA/1111 (openflux-alice)" "$first_line"
 row="$(client_row alice | cut -f1-4)"
 assert_eq "cmd_add records client in state file" \
   "$(printf 'alice\tmailru\thttps://cloud.mail.ru/public/AAAA/1111\topenflux-alice')" "$row"
 docker_call="$(cat "$DOCKER_LOG")"
 case "$docker_call" in
-  *"run -d --name openflux-alice --restart unless-stopped --cap-add NET_RAW --cap-add NET_ADMIN -e ROLE=exit-node -e TRANSPORT=mailru -e URL=https://cloud.mail.ru/public/AAAA/1111 openflux-exit:local"*)
+  *"run -d --name openflux-alice --restart unless-stopped --cap-add NET_RAW --cap-add NET_ADMIN -e ROLE=exit-node -e TRANSPORT=mailru -e URL=https://cloud.mail.ru/public/AAAA/1111 -e ENCRYPTION_KEY="*" openflux-exit:local"*)
     assert_eq "cmd_add invokes docker run with correct args" "ok" "ok" ;;
   *)
     assert_eq "cmd_add invokes docker run with correct args" "ok" "$docker_call" ;;
 esac
+assert_eq "cmd_add prints a 64-char key" "64" "${#key_line}"
+case "$key_line" in
+  *[^a-f0-9]*) assert_eq "cmd_add key is lowercase hex" "ok" "non-hex: $key_line" ;;
+  "") assert_eq "cmd_add key is lowercase hex" "ok" "empty" ;;
+  *) assert_eq "cmd_add key is lowercase hex" "ok" "ok" ;;
+esac
+key_file="$(key_file_for alice)"
+if [ -f "$key_file" ] && [ "$(cat "$key_file")" = "$key_line" ]; then
+  assert_eq "cmd_add persists the key to disk" "ok" "ok"
+else
+  assert_eq "cmd_add persists the key to disk" "ok" "missing or mismatched at $key_file"
+fi
+perm="$(stat -c %a "$key_file" 2>/dev/null || stat -f %Lp "$key_file" 2>/dev/null)"
+assert_eq "cmd_add key file is 0600" "600" "$perm"
 teardown_fixture
 
 setup_fixture
@@ -284,6 +305,8 @@ teardown_fixture
 
 setup_fixture
 cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+key_file="$(key_file_for alice)"
+[ -f "$key_file" ] || assert_eq "cmd_add left a key file for cmd_remove to clean up" "present" "missing"
 cmd_remove alice >/dev/null
 count="$(grep -c -F 'alice' "$OPENFLUX_STATE_FILE" || true)"
 assert_eq "cmd_remove deletes client from state file" "0" "${count:-0}"
@@ -291,6 +314,11 @@ if grep -qxF "openflux-alice" "$CONTAINERS_FILE" 2>/dev/null; then
   assert_eq "cmd_remove removes the docker container" "gone" "still there"
 else
   assert_eq "cmd_remove removes the docker container" "gone" "gone"
+fi
+if [ -f "$key_file" ]; then
+  assert_eq "cmd_remove deletes the key file" "gone" "still there"
+else
+  assert_eq "cmd_remove deletes the key file" "gone" "gone"
 fi
 teardown_fixture
 
@@ -537,6 +565,12 @@ case "$docker_call" in
     assert_eq "cmd_upgrade recreates a stale container with its stored transport/url" "ok" "ok" ;;
   *) assert_eq "cmd_upgrade recreates a stale container with its stored transport/url" "ok" "$docker_call" ;;
 esac
+bob_key="$(cat "$(key_file_for bob)" 2>/dev/null || true)"
+case "$docker_call" in
+  *"-e ENCRYPTION_KEY=$bob_key openflux-exit:local"*)
+    assert_eq "cmd_upgrade recreates with the client's existing key, not a new one" "ok" "ok" ;;
+  *) assert_eq "cmd_upgrade recreates with the client's existing key, not a new one" "ok" "$docker_call" ;;
+esac
 case "$docker_call" in
   *build*) assert_eq "cmd_upgrade --no-build skips docker build" "no build" "built" ;;
   *) assert_eq "cmd_upgrade --no-build skips docker build" "no build" "no build" ;;
@@ -591,6 +625,45 @@ setup_fixture
 status=0
 ( cmd_upgrade --bogus ) >/dev/null 2>&1 || status=$?
 assert_eq "cmd_upgrade rejects unknown options" "1" "$status"
+teardown_fixture
+
+# --- cmd_rekey ---
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+old_key="$(cat "$(key_file_for alice)")"
+: > "$DOCKER_LOG"
+out="$(cmd_rekey alice)"
+new_key="$(printf '%s\n' "$out" | tail -n1)"
+case "$out" in
+  *"rekeyed client 'alice'"*) assert_eq "cmd_rekey prints confirmation" "ok" "ok" ;;
+  *) assert_eq "cmd_rekey prints confirmation" "ok" "$out" ;;
+esac
+if [ "$new_key" != "$old_key" ] && [ "${#new_key}" = 64 ]; then
+  assert_eq "cmd_rekey generates a fresh 64-char key" "ok" "ok"
+else
+  assert_eq "cmd_rekey generates a fresh 64-char key" "ok" "old=$old_key new=$new_key"
+fi
+stored_key="$(cat "$(key_file_for alice)")"
+assert_eq "cmd_rekey persists the new key to disk" "$new_key" "$stored_key"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *"rm -f openflux-alice"*"run -d --name openflux-alice"*"-e ENCRYPTION_KEY=$new_key openflux-exit:local"*)
+    assert_eq "cmd_rekey recreates the container with the new key" "ok" "ok" ;;
+  *) assert_eq "cmd_rekey recreates the container with the new key" "ok" "$docker_call" ;;
+esac
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_rekey ghost ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_rekey on unknown client exits 1" "1" "$status"
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_rekey ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_rekey without a name exits 1" "1" "$status"
 teardown_fixture
 
 # --- symlink invocation ---

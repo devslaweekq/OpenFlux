@@ -17,8 +17,9 @@ Commands:
   list                                     List all clients: transport, status, url
   logs <name>                              Follow logs for a client's container
   upgrade [--no-build]                     Rebuild the image and recreate containers still on an older one
+  rekey <name>                             Generate a new encryption key for an existing client, print it
 
-Transports: yandex, vyandex, cupsonline, mailru
+Transports: yandex, vyandex, cupsonline, mailru, telemost (experimental)
 USAGE
 }
 
@@ -35,7 +36,55 @@ ensure_state_file() {
   fi
 }
 
-VALID_TRANSPORTS="yandex vyandex cupsonline mailru"
+# generate_key prints a fresh 64-char hex shared secret (well above the
+# binary's 16-char minimum, see utils.MinSecretChars) for --encryption-key-file.
+# `od -N32` reads exactly 32 bytes and exits on its own; piping an unbounded
+# `tr -dc ... < /dev/urandom` into `head -c64` instead would make `head`
+# close the pipe early and SIGPIPE the producer, which -- under this script's
+# `set -o pipefail` -- turns a plain `key=$(generate_key)` into a fatal
+# errexit once in a while instead of a reliably successful call.
+generate_key() {
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+# keys_dir is computed fresh from $STATE_FILE on every call, not cached in a
+# global -- openflux-ctl is sourced once by the test harness before any test
+# fixture overrides STATE_FILE, so a global set at source time would keep
+# pointing at the real default path forever (see setup_fixture's own comment
+# about this exact issue with STATE_FILE itself).
+keys_dir() {
+  printf '%s/keys' "$(dirname "$STATE_FILE")"
+}
+
+key_file_for() {
+  printf '%s/%s.key' "$(keys_dir)" "$1"
+}
+
+# write_key_file persists a client's secret to disk (0600, directory 0700) so
+# `upgrade`/`rekey` can reuse it later instead of inventing a new one.
+write_key_file() {
+  local name="$1" key="$2" dir file
+  dir="$(keys_dir)"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  file="$(key_file_for "$name")"
+  printf '%s' "$key" > "$file"
+  chmod 600 "$file"
+}
+
+# read_key_file prints a client's stored secret, or nothing if it was
+# created before this feature existed (upgrade then just leaves it unencrypted).
+read_key_file() {
+  local file
+  file="$(key_file_for "$1")"
+  [ -f "$file" ] && cat "$file"
+}
+
+remove_key_file() {
+  rm -f "$(key_file_for "$1")"
+}
+
+VALID_TRANSPORTS="yandex vyandex cupsonline mailru telemost"
 
 validate_transport() {
   local t="$1" vt
@@ -150,10 +199,17 @@ cmd_install() {
 }
 
 run_container() {
-  local container="$1" transport="$2" url="$3"
+  local container="$1" transport="$2" url="$3" key="${4:-}"
+  # MODE defaults to l3 in docker/entrypoint.sh (raw-socket forwarding) --
+  # needs NET_RAW (the raw socket itself) and NET_ADMIN (the scoped
+  # kernel-RST-drop rule, confined to this container's netns).
+  local -a env_args=(-e ROLE=exit-node -e TRANSPORT="$transport" -e URL="$url")
+  if [ -n "$key" ]; then
+    env_args+=(-e ENCRYPTION_KEY="$key")
+  fi
   docker run -d --name "$container" --restart unless-stopped \
     --cap-add NET_RAW --cap-add NET_ADMIN \
-    -e ROLE=exit-node -e TRANSPORT="$transport" -e URL="$url" \
+    "${env_args[@]}" \
     "$IMAGE_NAME" >/dev/null
 }
 
@@ -188,10 +244,18 @@ cmd_add() {
     die "a docker container named '$container' already exists (state file may be out of sync)"
   fi
 
-  run_container "$container" "$transport" "$url" || die "failed to start container '$container'"
+  local key
+  key="$(generate_key)"
+
+  run_container "$container" "$transport" "$url" "$key" || die "failed to start container '$container'"
+  write_key_file "$name" "$key"
 
   record_client "$name" "$transport" "$url" "$container"
   echo "added client '$name' -> $transport $url ($container)"
+  echo "encryption key for '$name' (give this to the client; save it to a file and run their"
+  echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
+  echo "server at $(key_file_for "$name")):"
+  echo "$key"
 }
 
 cmd_remove() {
@@ -205,6 +269,7 @@ cmd_remove() {
   local container
   container="$(client_row "$name" | cut -f4)"
   docker rm -f "$container" >/dev/null 2>&1 || true
+  remove_key_file "$name"
   remove_client_record "$name"
   echo "removed client '$name'"
 }
@@ -266,7 +331,7 @@ cmd_upgrade() {
     fi
     echo "recreating $name ($container) on the new image ..."
     docker rm -f "$container" >/dev/null 2>&1 || true
-    if run_container "$container" "$transport" "$url"; then
+    if run_container "$container" "$transport" "$url" "$(read_key_file "$name")"; then
       updated=$((updated + 1))
     else
       echo "error: failed to start container '$container'" >&2
@@ -276,6 +341,32 @@ cmd_upgrade() {
 
   echo "upgrade done: $updated recreated, $failed failed"
   [ "$failed" = "0" ] || return 1
+}
+
+cmd_rekey() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: openflux-ctl rekey <name>"
+  ensure_state_file
+  client_exists "$name" || die "client '$name' not found"
+
+  local transport url container row
+  row="$(client_row "$name")"
+  transport="$(printf '%s' "$row" | cut -f2)"
+  url="$(printf '%s' "$row" | cut -f3)"
+  container="$(printf '%s' "$row" | cut -f4)"
+
+  local key
+  key="$(generate_key)"
+
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  run_container "$container" "$transport" "$url" "$key" || die "failed to restart container '$container' with the new key"
+  write_key_file "$name" "$key"
+
+  echo "rekeyed client '$name' ($container)"
+  echo "encryption key for '$name' (give this to the client; save it to a file and run their"
+  echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
+  echo "server at $(key_file_for "$name")):"
+  echo "$key"
 }
 
 main() {
@@ -288,6 +379,7 @@ main() {
     list) cmd_list "$@" ;;
     logs) cmd_logs "$@" ;;
     upgrade) cmd_upgrade "$@" ;;
+    rekey) cmd_rekey "$@" ;;
     -h|--help|help)
       usage
       exit 0

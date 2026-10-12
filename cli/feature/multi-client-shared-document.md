@@ -3,6 +3,12 @@
 > Status: **not started, design only**. Written 2026-09-21 after live-testing the current one-document-one-client limitation and confirming
 > the root cause in code and in production traffic. Nothing in this file has been implemented — `openflux-ctl` today still requires one
 > document per client (see `cli/README.md`), which is the correct and only safe option until (if ever) this plan is executed.
+>
+> **Re-checked 2026-10-12** against the ~288 commits that landed on upstream `main` since this was written (Session architecture,
+> `node-install.sh` provisioning, telemost/script transports). Confirmed still unimplemented: `tunnel/l3/l3.go`'s hardcoded single
+> `clientIP` and session-less `flowKey` are untouched, and upstream's own multi-transport "Session" (`docs/sessions.md`) explicitly states
+> _"An exit therefore serves one active client at a time"_ — that's session **replacement** (a new client with a valid challenge takes over
+> from an old one), not the concurrent multi-client **multiplexing** this file describes. The two are unrelated; this remains open.
 
 ## Why this file exists
 

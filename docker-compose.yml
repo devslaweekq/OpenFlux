@@ -10,8 +10,11 @@
 #
 # Privileges, deliberately asymmetric:
 #   client     — none. It dials out like a browser and serves SOCKS5 locally.
-#   exit-node  — NET_RAW (raw sockets) + NET_ADMIN (the RST-drop rule), confined
-#                to this container's netns; the rule can never touch the host.
+#   exit-node  — defaults to MODE=l3 (raw-socket forwarding), so it needs
+#                cap_add below (NET_RAW for the raw socket, NET_ADMIN for the
+#                scoped kernel-RST-drop rule, confined to this container's
+#                netns). Set MODE=l4 for the unprivileged backend instead --
+#                drop the cap_add too if you do, it won't be needed.
 
 services:
   client:
@@ -43,6 +46,7 @@ services:
       MAX_TOKEN: ${MAX_TOKEN:-}
       MAX_UID: ${MAX_UID:-}
       LOCAL_IP: ${EXIT_LOCAL_IP:-}
+      MODE: ${MODE:-l3}
       DEBUG: ${DEBUG:-0}
     cap_add:
       - NET_RAW
