@@ -51,3 +51,19 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
+
+  admin-ui:
+    build: ./admin-ui
+    image: openflux-admin-ui:local
+    restart: unless-stopped
+    profiles: [admin-ui]
+    environment:
+      ADMIN_UI_USER: ${ADMIN_UI_USER:-admin}
+      ADMIN_UI_PASSWORD: ${ADMIN_UI_PASSWORD:?set ADMIN_UI_PASSWORD before starting admin-ui}
+      ADMIN_UI_PORT: ${ADMIN_UI_PORT:-9027}
+      OPENFLUX_IMAGE: ${OPENFLUX_IMAGE:-openflux-exit:local}
+    ports:
+      - "127.0.0.1:${ADMIN_UI_PORT:-9027}:9027"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./cli/state:/state

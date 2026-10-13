@@ -1,0 +1,19 @@
+{
+  "name": "openflux-admin-ui-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "cookie": "^0.6.0",
+    "cookie-parser": "^1.4.6",
+    "dockerode": "^4.0.2",
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "supertest": "^6.3.4"
+  }
+}

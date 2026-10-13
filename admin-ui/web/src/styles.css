@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply bg-ink font-sans text-ash antialiased;
+    }
+
+    ::selection {
+        @apply bg-signal/30 text-ash;
+    }
+
+    *:focus-visible {
+        outline: 2px solid theme('colors.signal');
+        outline-offset: 2px;
+    }
+}
+
+@layer components {
+    .log-viewer pre::-webkit-scrollbar,
+    .client-list::-webkit-scrollbar {
+        width: 8px;
+    }
+    .log-viewer pre::-webkit-scrollbar-thumb,
+    .client-list::-webkit-scrollbar-thumb {
+        @apply rounded-full bg-line;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .animate-pulseline {
+        animation: none !important;
+        opacity: 1 !important;
+        transform: none !important;
+    }
+}
