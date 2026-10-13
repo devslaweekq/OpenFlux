@@ -33,6 +33,7 @@ export default function Dashboard() {
         const result = await api.editClient(selected, {
             transport: values.transport,
             url: values.url,
+            mode: values.mode,
         });
         if (result.key) setRevealedKey(result.key);
         await refresh();
@@ -135,6 +136,7 @@ export default function Dashboard() {
                                 name: selectedClient.name,
                                 transport: selectedClient.transport,
                                 url: '',
+                                mode: selectedClient.mode || 'l3',
                             }}
                             onSubmit={handleEdit}
                         />

@@ -21,6 +21,9 @@ function fakeDockerClient() {
         async runContainer({ containerName }) {
             containers[containerName] = { status: 'running' };
         },
+        async bootstrapCupsonlineUrl() {
+            return 'https://cups.online/public/fake-bootstrapped-rooms';
+        },
         async streamLogs(containerName, onLine) {
             // 50ms (not real exit-node pace) so the e2e smoke test's log
             // assertion resolves fast instead of idling through most of a

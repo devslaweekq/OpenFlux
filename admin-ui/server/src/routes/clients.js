@@ -14,6 +14,7 @@ function createClientsRouter(dockerClient) {
                     transport: c.transport,
                     container: c.container,
                     created: c.created,
+                    mode: c.mode,
                     status: await dockerClient.containerStatus(c.container),
                 })),
             );
@@ -33,7 +34,8 @@ function createClientsRouter(dockerClient) {
     });
 
     router.post('/', async (req, res) => {
-        const { name, transport, url } = req.body || {};
+        const { name, transport, mode = state.DEFAULT_MODE } = req.body || {};
+        let { url } = req.body || {};
         if (!state.isValidName(name)) {
             res.status(400).json({
                 error: `invalid client name '${name}' (allowed: letters, digits, '-', '_')`,
@@ -46,7 +48,15 @@ function createClientsRouter(dockerClient) {
             });
             return;
         }
-        if (!url) {
+        if (!state.isValidMode(mode)) {
+            res.status(400).json({
+                error: `unsupported mode '${mode}' (allowed: ${state.VALID_MODES.join(', ')})`,
+            });
+            return;
+        }
+        // cupsonline is the one transport that doesn't need an externally-created
+        // link: the exit node creates its own rooms, so url is optional for it.
+        if (!url && transport !== 'cupsonline') {
             res.status(400).json({ error: 'url is required' });
             return;
         }
@@ -70,9 +80,18 @@ function createClientsRouter(dockerClient) {
             return;
         }
 
+        if (!url && transport === 'cupsonline') {
+            try {
+                url = await dockerClient.bootstrapCupsonlineUrl(`${containerName}-bootstrap-${Date.now()}`);
+            } catch (err) {
+                res.status(500).json({ error: `cupsonline room bootstrap failed: ${err.message}` });
+                return;
+            }
+        }
+
         const key = state.generateKey();
         try {
-            await dockerClient.runContainer({ containerName, transport, url, key });
+            await dockerClient.runContainer({ containerName, transport, url, key, mode });
         } catch (err) {
             res.status(500).json({
                 error: `failed to start container '${containerName}': ${err.message}`,
@@ -86,13 +105,15 @@ function createClientsRouter(dockerClient) {
             transport,
             url,
             container: containerName,
+            mode,
         });
-        res.status(201).json({ name, transport, url, container: containerName, created, key });
+        res.status(201).json({ name, transport, url, container: containerName, created, mode, key });
     });
 
     router.put('/:name', async (req, res) => {
         const name = req.params.name;
-        const { transport, url } = req.body || {};
+        const { transport, mode: requestedMode } = req.body || {};
+        let { url } = req.body || {};
         const existing = state.readClients().find((c) => c.name === name);
         if (!existing) {
             res.status(404).json({ error: `client '${name}' not found` });
@@ -103,6 +124,19 @@ function createClientsRouter(dockerClient) {
                 error: `unsupported transport '${transport}' (allowed: ${state.VALID_TRANSPORTS.join(', ')})`,
             });
             return;
+        }
+        const mode = requestedMode || existing.mode || state.DEFAULT_MODE;
+        if (!state.isValidMode(mode)) {
+            res.status(400).json({
+                error: `unsupported mode '${mode}' (allowed: ${state.VALID_MODES.join(', ')})`,
+            });
+            return;
+        }
+        // Leaving url blank for cupsonline keeps the existing rooms instead of
+        // requiring a fresh bootstrap on every edit; any other transport still
+        // needs url re-entered.
+        if (!url && transport === 'cupsonline') {
+            url = existing.url;
         }
         if (!url) {
             res.status(400).json({ error: 'url is required' });
@@ -124,6 +158,7 @@ function createClientsRouter(dockerClient) {
                 transport,
                 url,
                 key,
+                mode,
             });
         } catch (err) {
             res.status(500).json({
@@ -131,11 +166,12 @@ function createClientsRouter(dockerClient) {
             });
             return;
         }
-        state.replaceClientFields(name, { transport, url });
+        state.replaceClientFields(name, { transport, url, mode });
         res.json({
             name,
             transport,
             url,
+            mode,
             container: existing.container,
             key: key || undefined,
         });
@@ -223,6 +259,7 @@ function createClientsRouter(dockerClient) {
                 transport: existing.transport,
                 url: existing.url,
                 key,
+                mode: existing.mode,
             });
         } catch (err) {
             res.status(500).json({

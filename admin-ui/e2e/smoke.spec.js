@@ -12,7 +12,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
     // Create alice (mailru)
     await page.getByRole('button', { name: '+ New client' }).click();
     await page.getByLabel('Name').fill('alice');
-    await page.locator('select').selectOption('mailru');
+    await page.getByLabel('Transport').selectOption('mailru');
     await page.getByLabel('Document URL').fill('https://cloud.mail.ru/public/AAAA/1111');
     await page.getByRole('button', { name: 'Create client' }).click();
 
@@ -23,7 +23,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
     // Create bob (yandex)
     await page.getByRole('button', { name: '+ New client' }).click();
     await page.getByLabel('Name').fill('bob');
-    await page.locator('select').selectOption('yandex');
+    await page.getByLabel('Transport').selectOption('yandex');
     await page.getByLabel('Document URL').fill('https://docs.yandex.ru/edit/d/xyz');
     await page.getByRole('button', { name: 'Create client' }).click();
 
@@ -37,7 +37,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
 
     // Edit alice: change transport to cupsonline (edit always requires a url too, since
     // Dashboard always passes an empty url as initialValues for edit)
-    await page.locator('select').selectOption('cupsonline');
+    await page.getByLabel('Transport').selectOption('cupsonline');
     await page.getByLabel('Document URL').fill('https://cups.online/room/edited-alice');
     await page.getByRole('button', { name: 'Save changes' }).click();
 
@@ -53,7 +53,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
     // without an intervening close — the edit form must show bob's data (yandex),
     // not alice's just-edited value (cupsonline), proving the form actually remounts.
     await page.getByText('bob').first().click();
-    await expect(page.locator('select')).toHaveValue('yandex');
+    await expect(page.getByLabel('Transport')).toHaveValue('yandex');
 
     // Remove bob (already selected)
     await page.getByRole('button', { name: 'Remove' }).click();

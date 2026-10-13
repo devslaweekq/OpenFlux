@@ -41,19 +41,76 @@ function createDockerClient(dockerode) {
         }
     }
 
-    async function runContainer({ containerName, transport, url, key }) {
+    async function runContainer({ containerName, transport, url, key, mode = 'l3' }) {
         const Env = [`ROLE=exit-node`, `TRANSPORT=${transport}`, `URL=${url}`];
         if (key) Env.push(`ENCRYPTION_KEY=${key}`);
+        // l3 (default) needs the raw-socket capabilities; l4 (gVisor proxy) is
+        // unprivileged and takes none, mirroring cli/openflux-ctl's run_container.
+        const HostConfig = { RestartPolicy: { Name: 'unless-stopped' } };
+        if (mode === 'l4') {
+            Env.push(`MODE=${mode}`);
+        } else {
+            HostConfig.CapAdd = ['NET_RAW', 'NET_ADMIN'];
+        }
         const container = await dockerode.createContainer({
             name: containerName,
             Image: imageNameFromEnv(),
             Env,
-            HostConfig: {
-                RestartPolicy: { Name: 'unless-stopped' },
-                CapAdd: ['NET_RAW', 'NET_ADMIN'],
-            },
+            HostConfig,
         });
         await container.start();
+    }
+
+    // bootstrapCupsonlineUrl mirrors cli/openflux-ctl's bootstrap_cupsonline_url:
+    // start a throwaway exit-node container with no URL so the binary creates
+    // fresh Cups.online rooms itself and prints the base64 room-list between its
+    // "=== COPY THIS TO CLIENT ===" marker lines, capture that line, then remove
+    // the container. The caller treats the result exactly like a user-supplied url.
+    async function bootstrapCupsonlineUrl(containerName) {
+        const timeoutMs = Number(process.env.OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT || 20) * 1000;
+        const container = await dockerode.createContainer({
+            name: containerName,
+            Image: imageNameFromEnv(),
+            Env: ['ROLE=exit-node', 'TRANSPORT=cupsonline'],
+        });
+        await container.start();
+
+        const marker = '=== COPY THIS TO CLIENT ===';
+        let buffered = '';
+        let url = '';
+        try {
+            const stream = await container.logs({ follow: true, stdout: true, stderr: true });
+            const sink = {
+                write: (chunk) => {
+                    buffered += chunk.toString('utf8');
+                    if (!url) {
+                        const idx = buffered.indexOf(marker);
+                        if (idx !== -1) {
+                            const after = buffered
+                                .slice(idx + marker.length)
+                                .split('\n')
+                                .map((l) => l.trim())
+                                .filter(Boolean);
+                            if (after.length) url = after[0];
+                        }
+                    }
+                },
+            };
+            dockerode.modem.demuxStream(stream, sink, sink);
+
+            const deadline = Date.now() + timeoutMs;
+            while (!url && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+            stream.destroy();
+        } finally {
+            await container.remove({ force: true }).catch(() => {});
+        }
+
+        if (!url) {
+            throw new Error('cupsonline room bootstrap timed out waiting for the room list');
+        }
+        return url;
     }
 
     async function streamLogs(containerName, onLine, onError) {
@@ -77,6 +134,7 @@ function createDockerClient(dockerode) {
         stopContainer,
         startContainer,
         runContainer,
+        bootstrapCupsonlineUrl,
         streamLogs,
     };
 }
