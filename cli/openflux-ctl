@@ -12,14 +12,23 @@ Usage: openflux-ctl <command> [args]
 
 Commands:
   install [--import <file>]                Check Docker, build the exit-node image, optionally bulk-import clients
-  add <name> --transport=<t> --url=<url>   Create a new client (starts an isolated exit-node container)
+  add <name> --transport=<t> [--url=<url>] [--mode=<l3|l4>]
+                                           Create a new client (starts an isolated exit-node container)
+                                            --url is optional for cupsonline: omit it to auto-create rooms
+                                            --mode is the exit backend: l3 (default, raw sockets, needs
+                                            NET_RAW/NET_ADMIN) or l4 (gVisor proxy, unprivileged)
   remove <name>                            Remove a client (stops its container, forgets its config)
+  stop <name>                              Stop a client's container (keeps its config, unlike remove)
+  start <name>                             Start a previously stopped client's container
   list                                     List all clients: transport, status, url
   logs <name>                              Follow logs for a client's container
   upgrade [--no-build]                     Rebuild the image and recreate containers still on an older one
   rekey <name>                             Generate a new encryption key for an existing client, print it
+  admin-ui start                           Start the web dashboard (asks to set a password on first run)
+  admin-ui stop                            Stop the web dashboard
 
 Transports: yandex, vyandex, cupsonline, mailru, telemost (experimental)
+Modes:      l3 (default), l4
 USAGE
 }
 
@@ -45,6 +54,68 @@ ensure_state_file() {
 # errexit once in a while instead of a reliably successful call.
 generate_key() {
   od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+# generate_password prints a fresh 32-char hex password for the admin-ui login
+# (16 random bytes -- shorter than generate_key's 64 chars since a human has
+# to read/type/paste this one, not just store it in a file).
+generate_password() {
+  od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
+}
+
+# admin_ui_env_file is computed fresh on every call, not cached in a global --
+# same reason as keys_dir(): the test harness sources this script once before
+# any fixture overrides the env var, so a global set at source time would
+# keep pointing at the real repo's .env forever.
+admin_ui_env_file() {
+  printf '%s' "${OPENFLUX_ADMIN_UI_ENV_FILE:-$REPO_ROOT/.env}"
+}
+
+# env_get prints the value of KEY=... from a dotenv-style file, or nothing if
+# the file or the key don't exist.
+env_get() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/, ""); print; exit}' "$file"
+}
+
+# env_set upserts KEY=value in a dotenv-style file (creating it, 0600, if
+# missing), replacing an existing KEY= line in place rather than duplicating it.
+env_set() {
+  local file="$1" key="$2" value="$3"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    awk -F= -v k="$key" -v v="$value" 'BEGIN{OFS="="} $1==k {print k, v; next} {print}' "$file" > "$tmp"
+    mv "$tmp" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+  chmod 600 "$file"
+}
+
+# ensure_admin_ui_password makes sure ADMIN_UI_PASSWORD is set in the admin-ui
+# env file, prompting for one on first run (or generating one when stdin
+# isn't a terminal, e.g. in scripts/CI) and persisting it so later runs don't
+# ask again.
+ensure_admin_ui_password() {
+  local env_file="$1"
+  [ -n "$(env_get "$env_file" ADMIN_UI_PASSWORD)" ] && return 0
+
+  echo "no admin-ui password set yet -- this protects the dashboard wherever you expose it." >&2
+  local password=""
+  if [ -t 0 ]; then
+    read -r -s -p "set a password (leave empty to generate one): " password
+    echo >&2
+  fi
+  if [ -z "$password" ]; then
+    password="$(generate_password)"
+    echo "generated password: $password" >&2
+  fi
+  env_set "$env_file" ADMIN_UI_PASSWORD "$password"
+  echo "saved to $env_file (chmod 600) -- user is 'admin' unless you set ADMIN_UI_USER there too" >&2
 }
 
 # keys_dir is computed fresh from $STATE_FILE on every call, not cached in a
@@ -94,6 +165,25 @@ validate_transport() {
   return 1
 }
 
+VALID_MODES="l3 l4"
+DEFAULT_MODE="l3"
+
+validate_mode() {
+  local m="$1" vm
+  for vm in $VALID_MODES; do
+    [ "$m" = "$vm" ] && return 0
+  done
+  return 1
+}
+
+# client_mode prints a client's mode; rows written before --mode existed have
+# no 6th column and were always l3.
+client_mode() {
+  local mode
+  mode="$(client_row "$1" | cut -f6)"
+  printf '%s' "${mode:-$DEFAULT_MODE}"
+}
+
 validate_name() {
   [ -n "$1" ] && [[ "$1" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
@@ -108,9 +198,9 @@ client_exists() {
 }
 
 record_client() {
-  local name="$1" transport="$2" url="$3" container="$4"
+  local name="$1" transport="$2" url="$3" container="$4" mode="${5:-$DEFAULT_MODE}"
   ensure_state_file
-  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$transport" "$url" "$container" "$(date -Iseconds)" >> "$STATE_FILE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$transport" "$url" "$container" "$(date -Iseconds)" "$mode" >> "$STATE_FILE"
 }
 
 remove_client_record() {
@@ -199,28 +289,69 @@ cmd_install() {
 }
 
 run_container() {
-  local container="$1" transport="$2" url="$3" key="${4:-}"
+  local container="$1" transport="$2" url="$3" key="${4:-}" mode="${5:-$DEFAULT_MODE}"
   # MODE defaults to l3 in docker/entrypoint.sh (raw-socket forwarding) --
   # needs NET_RAW (the raw socket itself) and NET_ADMIN (the scoped
-  # kernel-RST-drop rule, confined to this container's netns).
+  # kernel-RST-drop rule, confined to this container's netns). l4 (gVisor
+  # proxy) is unprivileged, so it gets MODE=l4 and no extra capabilities.
   local -a env_args=(-e ROLE=exit-node -e TRANSPORT="$transport" -e URL="$url")
+  local -a cap_args=(--cap-add NET_RAW --cap-add NET_ADMIN)
   if [ -n "$key" ]; then
     env_args+=(-e ENCRYPTION_KEY="$key")
   fi
+  if [ "$mode" != "$DEFAULT_MODE" ]; then
+    env_args+=(-e MODE="$mode")
+    cap_args=()
+  fi
   docker run -d --name "$container" --restart unless-stopped \
-    --cap-add NET_RAW --cap-add NET_ADMIN \
+    "${cap_args[@]}" \
     "${env_args[@]}" \
     "$IMAGE_NAME" >/dev/null
 }
 
+# bootstrap_cupsonline_url starts a throwaway exit-node container with no
+# --url so the binary creates fresh Cups.online rooms itself and prints the
+# base64 room-list between its "COPY THIS TO CLIENT" marker lines, captures
+# that line, then removes the container. The caller treats the result
+# exactly like a user-supplied --url.
+bootstrap_cupsonline_url() {
+  local name="$1" container="openflux-${name}-bootstrap-$$"
+  local timeout="${OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT:-20}"
+
+  docker run -d --name "$container" -e ROLE=exit-node -e TRANSPORT=cupsonline \
+    "$IMAGE_NAME" >/dev/null \
+    || { echo "error: failed to start cupsonline room-bootstrap container" >&2; return 1; }
+
+  local url="" waited=0
+  while [ "$waited" -lt "$timeout" ]; do
+    url="$(docker logs "$container" 2>&1 | awk '
+      found { print; exit }
+      /=== COPY THIS TO CLIENT ===/ { found=1 }
+    ')"
+    [ -n "$url" ] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  docker rm -f "$container" >/dev/null 2>&1 || true
+
+  if [ -z "$url" ]; then
+    echo "error: cupsonline room bootstrap timed out waiting for the room list" >&2
+    return 1
+  fi
+  printf '%s' "$url"
+}
+
 cmd_add() {
-  local name="" transport="" url="" args=()
+  local name="" transport="" url="" mode="$DEFAULT_MODE" args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --transport=*) transport="${1#--transport=}" ;;
       --transport) transport="${2:-}"; shift ;;
       --url=*) url="${1#--url=}" ;;
       --url) url="${2:-}"; shift ;;
+      --mode=*) mode="${1#--mode=}" ;;
+      --mode) mode="${2:-}"; shift ;;
       --*) die "unknown option: $1" ;;
       *) args+=("$1") ;;
     esac
@@ -228,12 +359,12 @@ cmd_add() {
   done
   name="${args[0]:-}"
 
-  local usage_msg="usage: openflux-ctl add <name> --transport=<${VALID_TRANSPORTS// /|}> --url=<url>"
+  local usage_msg="usage: openflux-ctl add <name> --transport=<${VALID_TRANSPORTS// /|}> [--url=<url>] [--mode=<${VALID_MODES// /|}>]"
   [ -n "$name" ] || die "$usage_msg"
   validate_name "$name" || die "invalid client name '$name' (allowed: letters, digits, '-', '_')"
   [ -n "$transport" ] || die "$usage_msg"
   validate_transport "$transport" || die "unsupported transport '$transport' (allowed: $VALID_TRANSPORTS)"
-  [ -n "$url" ] || die "$usage_msg"
+  validate_mode "$mode" || die "unsupported mode '$mode' (allowed: $VALID_MODES)"
 
   ensure_state_file
   if client_exists "$name"; then
@@ -244,13 +375,24 @@ cmd_add() {
     die "a docker container named '$container' already exists (state file may be out of sync)"
   fi
 
+  # cupsonline is the one transport that doesn't need an externally-created
+  # link: the exit node creates its own rooms. Without --url, bootstrap a
+  # throwaway container to create them and capture the room-list it prints,
+  # then continue exactly as if the caller had passed that as --url.
+  if [ "$transport" = "cupsonline" ] && [ -z "$url" ]; then
+    echo "creating cupsonline rooms for '$name' ..."
+    url="$(bootstrap_cupsonline_url "$name")" || die "cupsonline room bootstrap failed for '$name'"
+    echo "rooms created"
+  fi
+  [ -n "$url" ] || die "$usage_msg"
+
   local key
   key="$(generate_key)"
 
-  run_container "$container" "$transport" "$url" "$key" || die "failed to start container '$container'"
+  run_container "$container" "$transport" "$url" "$key" "$mode" || die "failed to start container '$container'"
   write_key_file "$name" "$key"
 
-  record_client "$name" "$transport" "$url" "$container"
+  record_client "$name" "$transport" "$url" "$container" "$mode"
   echo "added client '$name' -> $transport $url ($container)"
   echo "encryption key for '$name' (give this to the client; save it to a file and run their"
   echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
@@ -274,17 +416,39 @@ cmd_remove() {
   echo "removed client '$name'"
 }
 
+cmd_stop() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: openflux-ctl stop <name>"
+  ensure_state_file
+  client_exists "$name" || die "client '$name' not found"
+  local container
+  container="$(client_row "$name" | cut -f4)"
+  docker stop "$container" >/dev/null || die "failed to stop container '$container'"
+  echo "stopped client '$name' ($container)"
+}
+
+cmd_start() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: openflux-ctl start <name>"
+  ensure_state_file
+  client_exists "$name" || die "client '$name' not found"
+  local container
+  container="$(client_row "$name" | cut -f4)"
+  docker start "$container" >/dev/null || die "failed to start container '$container'"
+  echo "started client '$name' ($container)"
+}
+
 cmd_list() {
   ensure_state_file
   if [ -z "$(awk '!/^#/ && NF' "$STATE_FILE")" ]; then
     echo "no clients"
     return 0
   fi
-  printf '%-12s %-10s %-10s %-45s %s\n' "NAME" "TRANSPORT" "STATUS" "URL" "CREATED"
-  while IFS=$'\t' read -r name transport url container created; do
+  printf '%-12s %-10s %-10s %-45s %-27s %s\n' "NAME" "TRANSPORT" "STATUS" "URL" "CREATED" "MODE"
+  while IFS=$'\t' read -r name transport url container created mode; do
     local status
     status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)"
-    printf '%-12s %-10s %-10s %-45s %s\n' "$name" "$transport" "$status" "$url" "$created"
+    printf '%-12s %-10s %-10s %-45s %-27s %s\n' "$name" "$transport" "$status" "$url" "$created" "${mode:-$DEFAULT_MODE}"
   done < <(awk '!/^#/ && NF' "$STATE_FILE")
 }
 
@@ -322,8 +486,8 @@ cmd_upgrade() {
   local current
   current="$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME")" || die "image '$IMAGE_NAME' not found -- run 'openflux-ctl install' first"
 
-  local name transport url container created running updated=0 failed=0
-  while IFS=$'\t' read -r name transport url container created; do
+  local name transport url container created mode running updated=0 failed=0
+  while IFS=$'\t' read -r name transport url container created mode; do
     running="$(docker inspect -f '{{.Image}}' "$container" 2>/dev/null || true)"
     if [ "$running" = "$current" ]; then
       echo "up to date: $name"
@@ -331,7 +495,7 @@ cmd_upgrade() {
     fi
     echo "recreating $name ($container) on the new image ..."
     docker rm -f "$container" >/dev/null 2>&1 || true
-    if run_container "$container" "$transport" "$url" "$(read_key_file "$name")"; then
+    if run_container "$container" "$transport" "$url" "$(read_key_file "$name")" "${mode:-$DEFAULT_MODE}"; then
       updated=$((updated + 1))
     else
       echo "error: failed to start container '$container'" >&2
@@ -349,17 +513,18 @@ cmd_rekey() {
   ensure_state_file
   client_exists "$name" || die "client '$name' not found"
 
-  local transport url container row
+  local transport url container row mode
   row="$(client_row "$name")"
   transport="$(printf '%s' "$row" | cut -f2)"
   url="$(printf '%s' "$row" | cut -f3)"
   container="$(printf '%s' "$row" | cut -f4)"
+  mode="$(client_mode "$name")"
 
   local key
   key="$(generate_key)"
 
   docker rm -f "$container" >/dev/null 2>&1 || true
-  run_container "$container" "$transport" "$url" "$key" || die "failed to restart container '$container' with the new key"
+  run_container "$container" "$transport" "$url" "$key" "$mode" || die "failed to restart container '$container' with the new key"
   write_key_file "$name" "$key"
 
   echo "rekeyed client '$name' ($container)"
@@ -369,13 +534,57 @@ cmd_rekey() {
   echo "$key"
 }
 
+cmd_admin_ui_start() {
+  command -v docker >/dev/null 2>&1 || die "docker is not installed -- run 'openflux-ctl install' first"
+  docker info >/dev/null 2>&1 || die "docker daemon is not reachable"
+  docker compose version >/dev/null 2>&1 || die "'docker compose' is not available (needs a recent Docker Engine with the compose plugin)"
+
+  local env_file; env_file="$(admin_ui_env_file)"
+  ensure_admin_ui_password "$env_file"
+
+  echo "starting admin-ui ..."
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/docker-compose.yml" --env-file "$env_file" \
+    --profile admin-ui up -d --build \
+    || die "failed to start admin-ui"
+
+  local port
+  port="$(env_get "$env_file" ADMIN_UI_PORT)"
+  echo "admin-ui is up: http://127.0.0.1:${port:-9027} (user: admin, password: see $env_file)"
+}
+
+cmd_admin_ui_stop() {
+  command -v docker >/dev/null 2>&1 || die "docker is not installed"
+  local env_file; env_file="$(admin_ui_env_file)"
+  if [ -z "$(env_get "$env_file" ADMIN_UI_PASSWORD)" ]; then
+    echo "admin-ui has never been started, nothing to stop"
+    return 0
+  fi
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/docker-compose.yml" --env-file "$env_file" \
+    --profile admin-ui stop admin-ui \
+    || die "failed to stop admin-ui"
+  echo "admin-ui stopped"
+}
+
+cmd_admin_ui() {
+  local action="${1:-}"
+  [ "$#" -gt 0 ] && shift
+  case "$action" in
+    start) cmd_admin_ui_start "$@" ;;
+    stop) cmd_admin_ui_stop "$@" ;;
+    *) die "usage: openflux-ctl admin-ui <start|stop>" ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   if [ "$#" -gt 0 ]; then shift; fi
   case "$cmd" in
     install) cmd_install "$@" ;;
+    admin-ui) cmd_admin_ui "$@" ;;
     add) cmd_add "$@" ;;
     remove) cmd_remove "$@" ;;
+    stop) cmd_stop "$@" ;;
+    start) cmd_start "$@" ;;
     list) cmd_list "$@" ;;
     logs) cmd_logs "$@" ;;
     upgrade) cmd_upgrade "$@" ;;

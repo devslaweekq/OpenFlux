@@ -29,6 +29,7 @@ setup_fixture() {
   # (client_row, client_exists, record_client, remove_client_record) use the
   # fixture, not the real repo state file.
   export STATE_FILE="$OPENFLUX_STATE_FILE"
+  export OPENFLUX_ADMIN_UI_ENV_FILE="$TMPDIR_TEST/.env"
   export DOCKER_LOG="$TMPDIR_TEST/docker.log"
   export CONTAINERS_FILE="$TMPDIR_TEST/containers"
   export IMAGES_FILE="$TMPDIR_TEST/images"
@@ -101,7 +102,17 @@ case "$1" in
     exit "${DOCKER_INFO_EXIT:-0}"
     ;;
   logs)
+    if [ -n "${DOCKER_LOGS_OUTPUT:-}" ]; then
+      printf '%s\n' "$DOCKER_LOGS_OUTPUT"
+    fi
     exit 0
+    ;;
+  compose)
+    shift
+    case "${1:-}" in
+      version) exit "${DOCKER_COMPOSE_VERSION_EXIT:-0}" ;;
+      *) exit "${DOCKER_COMPOSE_EXIT:-0}" ;;
+    esac
     ;;
   *)
     exit 0
@@ -283,6 +294,86 @@ if client_exists alice; then
 else
   assert_eq "cmd_add does not record client when docker run fails" "no row" "no row"
 fi
+teardown_fixture
+
+# --- cmd_add cupsonline auto-bootstrap ---
+
+setup_fixture
+export DOCKER_LOGS_OUTPUT=$'\n=== COPY THIS TO CLIENT ===\nFAKEBASE64ROOMLIST\n===========================\nSave it and pass it back as --url to reuse these rooms after a restart.\n'
+out="$(cmd_add alice --transport=cupsonline)"
+unset DOCKER_LOGS_OUTPUT
+row="$(client_row alice | cut -f1-3)"
+assert_eq "cupsonline auto-bootstrap records the captured room-list as the client's url" \
+  "$(printf 'alice\tcupsonline\tFAKEBASE64ROOMLIST')" "$row"
+case "$out" in
+  *"added client 'alice' -> cupsonline FAKEBASE64ROOMLIST (openflux-alice)"*)
+    assert_eq "cupsonline auto-bootstrap prints the captured url in the confirmation" "ok" "ok" ;;
+  *) assert_eq "cupsonline auto-bootstrap prints the captured url in the confirmation" "ok" "$out" ;;
+esac
+if grep -q -- "-bootstrap-" "$CONTAINERS_FILE" 2>/dev/null; then
+  assert_eq "cupsonline auto-bootstrap removes the throwaway bootstrap container" "gone" "still there"
+else
+  assert_eq "cupsonline auto-bootstrap removes the throwaway bootstrap container" "gone" "gone"
+fi
+if grep -qxF "openflux-alice" "$CONTAINERS_FILE" 2>/dev/null; then
+  assert_eq "cupsonline auto-bootstrap still starts the real managed container" "present" "present"
+else
+  assert_eq "cupsonline auto-bootstrap still starts the real managed container" "present" "missing"
+fi
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *"run -d --name openflux-alice --restart unless-stopped --cap-add NET_RAW --cap-add NET_ADMIN -e ROLE=exit-node -e TRANSPORT=cupsonline -e URL=FAKEBASE64ROOMLIST -e ENCRYPTION_KEY="*" openflux-exit:local"*)
+    assert_eq "cupsonline auto-bootstrap passes the captured url + a generated key to the real container" "ok" "ok" ;;
+  *) assert_eq "cupsonline auto-bootstrap passes the captured url + a generated key to the real container" "ok" "$docker_call" ;;
+esac
+teardown_fixture
+
+setup_fixture
+: > "$DOCKER_LOG"
+out="$(cmd_add alice --transport=cupsonline --url=https://example.com/already-have-rooms)"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *-bootstrap-*) assert_eq "cmd_add skips the bootstrap step when --url is already given for cupsonline" "no bootstrap" "$docker_call" ;;
+  *) assert_eq "cmd_add skips the bootstrap step when --url is already given for cupsonline" "no bootstrap" "no bootstrap" ;;
+esac
+row="$(client_row alice | cut -f3)"
+assert_eq "cmd_add with an explicit cupsonline --url records that url unchanged" \
+  "https://example.com/already-have-rooms" "$row"
+teardown_fixture
+
+setup_fixture
+export OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT=1
+status=0
+err="$(( cmd_add alice --transport=cupsonline ) 2>&1 1>/dev/null)" || status=$?
+unset OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT
+assert_eq "cmd_add fails when cupsonline room bootstrap times out" "1" "$status"
+case "$err" in
+  *"error:"*"bootstrap"*) assert_eq "cupsonline bootstrap timeout prints an actionable error" "ok" "ok" ;;
+  *) assert_eq "cupsonline bootstrap timeout prints an actionable error" "ok" "$err" ;;
+esac
+if grep -q -- "-bootstrap-" "$CONTAINERS_FILE" 2>/dev/null; then
+  assert_eq "cupsonline bootstrap timeout still cleans up the throwaway container" "gone" "still there"
+else
+  assert_eq "cupsonline bootstrap timeout still cleans up the throwaway container" "gone" "gone"
+fi
+if client_exists alice; then
+  assert_eq "cupsonline bootstrap timeout leaves no client record" "no row" "row written"
+else
+  assert_eq "cupsonline bootstrap timeout leaves no client record" "no row" "no row"
+fi
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+: > "$DOCKER_LOG"
+status=0
+( cmd_add alice --transport=cupsonline ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_add rejects a duplicate name before attempting cupsonline bootstrap" "1" "$status"
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *-bootstrap-*) assert_eq "duplicate-name rejection happens before any bootstrap container is started" "no bootstrap" "$docker_call" ;;
+  *) assert_eq "duplicate-name rejection happens before any bootstrap container is started" "no bootstrap" "no bootstrap" ;;
+esac
 teardown_fixture
 
 # --- ensure_state_file permissions ---
@@ -664,6 +755,186 @@ setup_fixture
 status=0
 ( cmd_rekey ) >/dev/null 2>&1 || status=$?
 assert_eq "cmd_rekey without a name exits 1" "1" "$status"
+teardown_fixture
+
+# --- --mode ---
+
+if validate_mode l4 && validate_mode l3 && ! validate_mode l5 && ! validate_mode ""; then
+  assert_eq "validate_mode accepts l3/l4 only" "ok" "ok"
+else
+  assert_eq "validate_mode accepts l3/l4 only" "ok" "bad"
+fi
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 --mode=l4 >/dev/null
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *"-e MODE=l4"*) assert_eq "cmd_add --mode=l4 passes MODE=l4 to the container" "ok" "ok" ;;
+  *) assert_eq "cmd_add --mode=l4 passes MODE=l4 to the container" "ok" "$docker_call" ;;
+esac
+case "$docker_call" in
+  *"--cap-add"*) assert_eq "l4 container gets no raw-socket capabilities" "none" "caps" ;;
+  *) assert_eq "l4 container gets no raw-socket capabilities" "none" "none" ;;
+esac
+assert_eq "cmd_add records the mode in the state file" "l4" "$(client_row alice | cut -f6)"
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+docker_call="$(cat "$DOCKER_LOG")"
+case "$docker_call" in
+  *"MODE="*) assert_eq "cmd_add without --mode leaves MODE to the entrypoint default" "unset" "set" ;;
+  *) assert_eq "cmd_add without --mode leaves MODE to the entrypoint default" "unset" "unset" ;;
+esac
+case "$docker_call" in
+  *"--cap-add NET_RAW --cap-add NET_ADMIN"*) assert_eq "l3 container keeps NET_RAW/NET_ADMIN" "ok" "ok" ;;
+  *) assert_eq "l3 container keeps NET_RAW/NET_ADMIN" "ok" "$docker_call" ;;
+esac
+assert_eq "cmd_add without --mode records l3" "l3" "$(client_row alice | cut -f6)"
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_add alice --transport=mailru --url=https://example.com/1 --mode=l5 ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_add rejects an invalid --mode" "1" "$status"
+assert_eq "invalid --mode starts no container" "" "$(cat "$DOCKER_LOG")"
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 --mode l4 >/dev/null
+assert_eq "cmd_add accepts '--mode l4' (space form)" "l4" "$(client_row alice | cut -f6)"
+teardown_fixture
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 --mode=l4 >/dev/null
+: > "$DOCKER_LOG"
+cmd_rekey alice >/dev/null
+case "$(cat "$DOCKER_LOG")" in
+  *"-e MODE=l4"*) assert_eq "cmd_rekey preserves the client's mode" "ok" "ok" ;;
+  *) assert_eq "cmd_rekey preserves the client's mode" "ok" "$(cat "$DOCKER_LOG")" ;;
+esac
+sed -i "s/^openflux-alice sha-new/openflux-alice sha-old/" "$IMAGES_FILE"
+: > "$DOCKER_LOG"
+cmd_upgrade --no-build >/dev/null
+case "$(cat "$DOCKER_LOG")" in
+  *"-e MODE=l4"*) assert_eq "cmd_upgrade preserves the client's mode" "ok" "ok" ;;
+  *) assert_eq "cmd_upgrade preserves the client's mode" "ok" "$(cat "$DOCKER_LOG")" ;;
+esac
+teardown_fixture
+
+# legacy 5-column rows (created before --mode existed) are treated as l3
+setup_fixture
+printf 'old\tmailru\thttps://example.com/9\topenflux-old\t2026-01-01T00:00:00Z\n' >> "$OPENFLUX_STATE_FILE"
+echo openflux-old >> "$CONTAINERS_FILE"; echo "openflux-old sha-old" >> "$IMAGES_FILE"
+cmd_upgrade --no-build >/dev/null
+case "$(cat "$DOCKER_LOG")" in
+  *"MODE="*) assert_eq "legacy row without a mode column upgrades as l3" "l3" "l4" ;;
+  *"--cap-add NET_RAW"*) assert_eq "legacy row without a mode column upgrades as l3" "l3" "l3" ;;
+  *) assert_eq "legacy row without a mode column upgrades as l3" "l3" "$(cat "$DOCKER_LOG")" ;;
+esac
+list_out="$(cmd_list)"
+case "$list_out" in
+  *MODE*) assert_eq "cmd_list shows a MODE column" "ok" "ok" ;;
+  *) assert_eq "cmd_list shows a MODE column" "ok" "$list_out" ;;
+esac
+teardown_fixture
+
+# --- per-client stop/start ---
+
+setup_fixture
+cmd_add alice --transport=mailru --url=https://example.com/1 >/dev/null
+: > "$DOCKER_LOG"
+cmd_stop alice >/dev/null
+assert_eq "cmd_stop calls docker stop on the client's container" "stop openflux-alice" "$(cat "$DOCKER_LOG")"
+: > "$DOCKER_LOG"
+cmd_start alice >/dev/null
+assert_eq "cmd_start calls docker start on the client's container" "start openflux-alice" "$(cat "$DOCKER_LOG")"
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_stop ghost ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_stop on an unknown client exits 1" "1" "$status"
+status=0
+( cmd_start ghost ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_start on an unknown client exits 1" "1" "$status"
+status=0
+( cmd_stop ) >/dev/null 2>&1 || status=$?
+assert_eq "cmd_stop without a name exits 1" "1" "$status"
+teardown_fixture
+
+# --- admin-ui: env_get / env_set ---
+
+setup_fixture
+env_file="$TMPDIR_TEST/sample.env"
+assert_eq "env_get on a missing file is empty" "" "$(env_get "$env_file" FOO)"
+env_set "$env_file" FOO bar
+assert_eq "env_set creates the file and sets the key" "bar" "$(env_get "$env_file" FOO)"
+assert_eq "env_set creates a 0600 file" "600" "$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file")"
+env_set "$env_file" FOO baz
+assert_eq "env_set upserts an existing key in place" "baz" "$(env_get "$env_file" FOO)"
+assert_eq "env_set upsert doesn't duplicate the key" "1" "$(grep -c '^FOO=' "$env_file")"
+env_set "$env_file" OTHER qux
+assert_eq "env_set preserves other keys" "baz" "$(env_get "$env_file" FOO)"
+teardown_fixture
+
+# --- admin-ui: ensure_admin_ui_password ---
+
+setup_fixture
+env_file="$(admin_ui_env_file)"
+assert_eq "admin_ui_env_file honors OPENFLUX_ADMIN_UI_ENV_FILE" "$TMPDIR_TEST/.env" "$env_file"
+ensure_admin_ui_password "$env_file" >/dev/null 2>&1
+generated="$(env_get "$env_file" ADMIN_UI_PASSWORD)"
+assert_eq "ensure_admin_ui_password generates a 32-char hex password when stdin isn't a tty" "32" "${#generated}"
+case "$generated" in
+  *[!0-9a-f]*) assert_eq "generated password is lowercase hex" "yes" "no" ;;
+  *) assert_eq "generated password is lowercase hex" "yes" "yes" ;;
+esac
+ensure_admin_ui_password "$env_file" >/dev/null 2>&1
+assert_eq "ensure_admin_ui_password leaves an existing password untouched" "$generated" "$(env_get "$env_file" ADMIN_UI_PASSWORD)"
+teardown_fixture
+
+# --- admin-ui start/stop ---
+
+setup_fixture
+( cmd_admin_ui_start ) >/dev/null 2>&1
+case "$(cat "$DOCKER_LOG")" in
+  *"compose --project-directory"*"--profile admin-ui up -d --build"*)
+    assert_eq "admin-ui start runs docker compose up -d --build" "ok" "ok" ;;
+  *) assert_eq "admin-ui start runs docker compose up -d --build" "ok" "$(cat "$DOCKER_LOG")" ;;
+esac
+assert_eq "admin-ui start persists a password on first run" "yes" "$([ -n "$(env_get "$(admin_ui_env_file)" ADMIN_UI_PASSWORD)" ] && echo yes || echo no)"
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_admin_ui_stop ) >/tmp/admin_ui_stop_out.$$ 2>&1 || status=$?
+out="$(cat /tmp/admin_ui_stop_out.$$)"; rm -f /tmp/admin_ui_stop_out.$$
+assert_eq "admin-ui stop with no password set says there's nothing to stop" "0" "$status"
+case "$out" in
+  *"never been started"*) assert_eq "admin-ui stop message mentions never started" "ok" "ok" ;;
+  *) assert_eq "admin-ui stop message mentions never started" "ok" "$out" ;;
+esac
+assert_eq "admin-ui stop with nothing to stop never calls docker" "" "$(cat "$DOCKER_LOG")"
+teardown_fixture
+
+setup_fixture
+env_set "$(admin_ui_env_file)" ADMIN_UI_PASSWORD deadbeef
+cmd_admin_ui_stop >/dev/null
+case "$(cat "$DOCKER_LOG")" in
+  *"compose --project-directory"*"--profile admin-ui stop admin-ui"*)
+    assert_eq "admin-ui stop runs docker compose stop admin-ui" "ok" "ok" ;;
+  *) assert_eq "admin-ui stop runs docker compose stop admin-ui" "ok" "$(cat "$DOCKER_LOG")" ;;
+esac
+teardown_fixture
+
+setup_fixture
+status=0
+( cmd_admin_ui ) >/dev/null 2>&1 || status=$?
+assert_eq "admin-ui with no action dies" "1" "$status"
+status=0
+( cmd_admin_ui bogus ) >/dev/null 2>&1 || status=$?
+assert_eq "admin-ui with an unknown action dies" "1" "$status"
 teardown_fixture
 
 # --- symlink invocation ---

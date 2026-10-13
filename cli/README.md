@@ -73,7 +73,7 @@ One-time (or re-run anytime to rebuild after pulling new code) setup:
 3. Builds the exit-node image (`openflux-exit:local` by default) from this repo's root `Dockerfile`.
 4. If `--import <file>` is given, bulk-adds every client listed in that file (see [Bulk import](#bulk-import) below) right after the build.
 
-### `add <name> --transport=<yandex|vyandex|cupsonline|mailru> --url=<url>`
+### `add <name> --transport=<yandex|vyandex|cupsonline|mailru|telemost> [--url=<url>]`
 
 Creates one new client: starts an isolated `openflux-<name>` container running the exit-node role against the given transport and document
 URL. `<name>` may contain letters, digits, `-` and `_`. Fails if a client with that name already exists.
@@ -82,10 +82,24 @@ URL. `<name>` may contain letters, digits, `-` and `_`. Fails if a client with t
 ./cli/openflux-ctl add bob --transport=yandex --url='https://docs.yandex.ru/docs/view?url=...'
 ```
 
+`--url` is required for every transport except `cupsonline`, which can create its own rooms: leave it out and `add` starts a throwaway
+container, waits for it to print its room-list, removes it, then creates the real client with that room-list as its `--url` (same value
+you'd otherwise pass by hand, and the same one printed back to you to give the client) — no document/link to create anywhere first.
+
+```bash
+./cli/openflux-ctl add carol --transport=cupsonline
+```
+
 ### `remove <name>`
 
 Stops and removes the client's container and deletes its record. Safe to run on a name that doesn't exist — it prints a warning and exits 0
 rather than failing, so scripts calling `remove` don't need to check existence first.
+
+### `stop <name>` / `start <name>`
+
+Stop or (re)start a single client's container without touching its state-file record, keys, or settings — unlike `remove`, nothing is
+forgotten, so `start` brings the exact same client back. Useful for pausing a client (maintenance, suspected abuse, debugging) without
+losing its transport/URL/encryption key. `list` reflects the change immediately (`exited` after `stop`, `running` after `start`).
 
 ### `list`
 
@@ -108,6 +122,22 @@ for the transport in use) or diagnosing why one isn't.
 Rebuilds the exit-node image (skipped with `--no-build`) and recreates every client container that is still running an older image, using
 the settings from the state file. Containers already on the current image are left alone. Re-running the one-line bootstrap does this
 automatically. Expect a brief reconnect for each recreated client.
+
+## Admin UI
+
+```bash
+openflux-ctl admin-ui start   # build + start the web dashboard
+openflux-ctl admin-ui stop    # stop it
+```
+
+`start` checks for `docker compose` (ships with modern Docker Engine installs), then runs the `admin-ui` profile from the repo's
+`docker-compose.yml` (see [`admin-ui/`](../admin-ui/) for what it is). On the very first run it asks you to set a password for the dashboard
+— leave the prompt empty to have it generate one instead — and saves it to `.env` at the repo root (`chmod 600`, gitignored) under
+`ADMIN_UI_PASSWORD`, so later `start` calls never ask again. The login user is `admin` unless you set `ADMIN_UI_USER` in that same `.env`
+file yourself. `stop` is a no-op (with a message, not an error) if the dashboard was never started.
+
+The dashboard listens on `http://127.0.0.1:${ADMIN_UI_PORT:-9027}` by default — see `.env.example` for the full set of `ADMIN_UI_*`
+variables, including `ADMIN_UI_SECURE_COOKIE` for when you front it with your own TLS-terminating reverse proxy.
 
 ## Bulk import
 
