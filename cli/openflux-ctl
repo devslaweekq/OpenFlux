@@ -12,11 +12,14 @@ Usage: openflux-ctl <command> [args]
 
 Commands:
   install [--import <file>]                Check Docker, build the exit-node image, optionally bulk-import clients
-  add <name> --transport=<t> [--url=<url>] [--mode=<l3|l4>]
+  add <name> --transport=<t> [--url=<url>] [--mode=<l3|l4>] [--avito-cookies=<cookies>]
                                            Create a new client (starts an isolated exit-node container)
-                                            --url is optional for cupsonline: omit it to auto-create rooms
+                                            --url is optional for cupsonline/avito: omit it to auto-create rooms
                                             --mode is the exit backend: l3 (default, raw sockets, needs
                                             NET_RAW/NET_ADMIN) or l4 (gVisor proxy, unprivileged)
+                                            --avito-cookies is required for avito: a raw cookie string for
+                                            code.avito.ru (not a host file path -- the container has no
+                                            access to one)
   remove <name>                            Remove a client (stops its container, forgets its config)
   stop <name>                              Stop a client's container (keeps its config, unlike remove)
   start <name>                             Start a previously stopped client's container

@@ -61,18 +61,21 @@ export default function Dashboard() {
     }
 
     const selectedClient = clients.find((c) => c.name === selected);
+    const mobileDetailOpen = Boolean(selectedClient) || showCreate;
 
     return (
-        <div className='dashboard flex h-screen bg-ink text-ash'>
-            <aside className='flex w-80 shrink-0 flex-col border-r border-line bg-panel'>
-                <div className='flex items-center justify-between border-b border-line px-4 py-4'>
+        <div className='dashboard flex h-dvh bg-ink text-ash'>
+            <aside
+                className={`${mobileDetailOpen ? 'hidden' : 'flex'} w-full shrink-0 flex-col border-r border-line bg-panel sm:flex sm:w-64 lg:w-80`}
+            >
+                <div className='flex items-center justify-between border-b border-line px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]'>
                     <h1 className='font-display text-base font-semibold tracking-tight text-ash'>Exit nodes</h1>
                     <button
                         onClick={() => {
                             setShowCreate(true);
                             setSelected(null);
                         }}
-                        className='rounded-md bg-signal/10 px-3 py-1.5 text-sm font-medium text-signal transition hover:bg-signal/20'
+                        className='rounded-md bg-signal/10 px-3 py-1.5 text-sm font-medium text-signal transition hover:bg-signal/20 active:bg-signal/30'
                     >
                         + New
                     </button>
@@ -86,7 +89,21 @@ export default function Dashboard() {
                 />
             </aside>
 
-            <main className='flex-1 overflow-y-auto p-6'>
+            <main
+                className={`${mobileDetailOpen ? 'block' : 'hidden'} flex-1 overflow-y-auto overscroll-contain px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))] sm:block sm:p-6`}
+            >
+                {mobileDetailOpen && (
+                    <button
+                        onClick={() => {
+                            setSelected(null);
+                            setShowCreate(false);
+                        }}
+                        className='mb-4 flex items-center gap-1 text-sm font-medium text-ash/60 transition hover:text-ash active:text-ash sm:hidden'
+                    >
+                        ← Back
+                    </button>
+                )}
+
                 {showCreate && (
                     <div className='mx-auto max-w-md'>
                         <h2 className='mb-4 font-display text-lg font-semibold text-ash'>New client</h2>
@@ -96,33 +113,33 @@ export default function Dashboard() {
 
                 {selectedClient && !showCreate && (
                     <div className='client-detail mx-auto flex max-w-3xl flex-col gap-6'>
-                        <div className='flex items-center justify-between'>
+                        <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
                             <h2 className='font-mono text-lg font-semibold text-ash'>{selectedClient.name}</h2>
-                            <div className='flex gap-2'>
+                            <div className='flex flex-wrap gap-2'>
                                 {selectedClient.status === 'running' ? (
                                     <button
                                         onClick={() => handleStop(selectedClient.name)}
-                                        className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-fault hover:text-fault'
+                                        className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-fault hover:text-fault active:border-fault active:text-fault'
                                     >
                                         Stop
                                     </button>
                                 ) : (
                                     <button
                                         onClick={() => handleStart(selectedClient.name)}
-                                        className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-signal hover:text-signal'
+                                        className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-signal hover:text-signal active:border-signal active:text-signal'
                                     >
                                         Start
                                     </button>
                                 )}
                                 <button
                                     onClick={() => handleRekey(selectedClient.name)}
-                                    className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-key hover:text-key'
+                                    className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-key hover:text-key active:border-key active:text-key'
                                 >
                                     Rekey
                                 </button>
                                 <button
                                     onClick={() => handleRemove(selectedClient.name)}
-                                    className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-fault hover:text-fault'
+                                    className='rounded-md border border-line px-3 py-1.5 text-sm text-ash/70 transition hover:border-fault hover:text-fault active:border-fault active:text-fault'
                                 >
                                     Remove
                                 </button>

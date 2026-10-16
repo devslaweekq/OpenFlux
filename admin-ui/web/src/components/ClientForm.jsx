@@ -57,7 +57,7 @@ export default function ClientForm({ initialValues = { name: '', transport: '', 
             })}
             <button
                 type='submit'
-                className='mt-1 self-start rounded-md bg-signal px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-signal/40'
+                className='mt-1 self-start rounded-md bg-signal px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-signal/40 active:scale-[0.98] active:brightness-95'
             >
                 {isEdit ? 'Save changes' : 'Create client'}
             </button>

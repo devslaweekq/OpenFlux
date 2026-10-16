@@ -25,9 +25,9 @@ case "$role" in
 esac
 
 case "$transport" in
-  yandex|vyandex|oneme|cupsonline|mailru|telemost) ;;
+  yandex|vyandex|oneme|cupsonline|avito|mailru|telemost) ;;
   *)
-    echo "TRANSPORT must be one of yandex, vyandex, oneme, cupsonline, mailru, telemost (got '$transport')" >&2
+    echo "TRANSPORT must be one of yandex, vyandex, oneme, cupsonline, avito, mailru, telemost (got '$transport')" >&2
     exit 2
     ;;
 esac
@@ -60,6 +60,9 @@ if [ -n "${MAX_TOKEN:-}" ]; then
 fi
 if [ -n "${MAX_UID:-}" ]; then
   set -- "$@" --maxUid "$MAX_UID"
+fi
+if [ -n "${AVITO_COOKIES:-}" ]; then
+  set -- "$@" --avito-cookies "$AVITO_COOKIES"
 fi
 if [ -n "${LOCAL_IP:-}" ]; then
   # Optional: pin the egress IP (alias IP) so the RST drop could be scoped

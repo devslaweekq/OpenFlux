@@ -28,11 +28,11 @@ export default function ClientList({ clients, onSelect }) {
     }
 
     return (
-        <ul className='client-list divide-y divide-line overflow-y-auto'>
+        <ul className='client-list divide-y divide-line overflow-y-auto overscroll-contain'>
             {clients.map((c) => (
                 <li key={c.name}>
                     <button
-                        className='client-row flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-ink/50'
+                        className='client-row flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-ink/50 active:bg-ink/50'
                         onClick={() => onSelect(c.name)}
                     >
                         <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[c.status] || 'bg-ash/30'}`} title={c.status} />
@@ -46,7 +46,7 @@ export default function ClientList({ clients, onSelect }) {
                         {!revealed[c.name] && (
                             <button
                                 type='button'
-                                className='reveal shrink-0 text-signal/70 transition hover:text-signal'
+                                className='reveal shrink-0 -m-1.5 p-1.5 text-signal/70 transition hover:text-signal active:text-signal'
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     reveal(c.name);
@@ -57,7 +57,7 @@ export default function ClientList({ clients, onSelect }) {
                         )}
                         <button
                             type='button'
-                            className='copy shrink-0 text-signal/70 transition hover:text-signal'
+                            className='copy shrink-0 -m-1.5 p-1.5 text-signal/70 transition hover:text-signal active:text-signal'
                             onClick={(e) => {
                                 e.stopPropagation();
                                 copy(c.name);

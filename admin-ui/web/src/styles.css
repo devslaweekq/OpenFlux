@@ -3,8 +3,20 @@
 @tailwind utilities;
 
 @layer base {
+    html {
+        /* kills the gray/blue flash Safari/Chrome paint on every tap -- buttons
+           get their own :active feedback instead (see below) */
+        -webkit-tap-highlight-color: transparent;
+        /* stop iOS from bumping font sizes in landscape */
+        -webkit-text-size-adjust: 100%;
+        /* this is an app shell with its own scroll containers, not a document --
+           pull-to-refresh/rubber-band at the page edge would fight the UI */
+        overscroll-behavior: none;
+    }
+
     body {
         @apply bg-ink font-sans text-ash antialiased;
+        overscroll-behavior: none;
     }
 
     ::selection {
@@ -14,6 +26,24 @@
     *:focus-visible {
         outline: 2px solid theme('colors.signal');
         outline-offset: 2px;
+    }
+
+    button,
+    [role='button'] {
+        /* fire click immediately instead of waiting out the double-tap-zoom delay */
+        touch-action: manipulation;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+
+    @media (pointer: coarse) {
+        /* iOS zooms the page into any input/select under 16px and never zooms back out */
+        input,
+        textarea,
+        select {
+            font-size: 16px;
+        }
     }
 }
 
