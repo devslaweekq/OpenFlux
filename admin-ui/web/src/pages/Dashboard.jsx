@@ -11,6 +11,7 @@ export default function Dashboard() {
     const [selected, setSelected] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [revealedKey, setRevealedKey] = useState(null);
+    const [actionError, setActionError] = useState(null);
 
     async function refresh() {
         setClients(await api.listClients());
@@ -40,24 +41,44 @@ export default function Dashboard() {
     }
 
     async function handleRemove(name) {
-        await api.removeClient(name);
-        if (selected === name) setSelected(null);
-        await refresh();
+        setActionError(null);
+        try {
+            await api.removeClient(name);
+            if (selected === name) setSelected(null);
+            await refresh();
+        } catch (err) {
+            setActionError(err.message);
+        }
     }
 
     async function handleRekey(name) {
-        const result = await api.rekeyClient(name);
-        setRevealedKey(result.key);
+        setActionError(null);
+        try {
+            const result = await api.rekeyClient(name);
+            setRevealedKey(result.key);
+        } catch (err) {
+            setActionError(err.message);
+        }
     }
 
     async function handleStop(name) {
-        await api.stopClient(name);
-        await refresh();
+        setActionError(null);
+        try {
+            await api.stopClient(name);
+            await refresh();
+        } catch (err) {
+            setActionError(err.message);
+        }
     }
 
     async function handleStart(name) {
-        await api.startClient(name);
-        await refresh();
+        setActionError(null);
+        try {
+            await api.startClient(name);
+            await refresh();
+        } catch (err) {
+            setActionError(err.message);
+        }
     }
 
     const selectedClient = clients.find((c) => c.name === selected);
@@ -74,6 +95,7 @@ export default function Dashboard() {
                         onClick={() => {
                             setShowCreate(true);
                             setSelected(null);
+                            setActionError(null);
                         }}
                         className='rounded-md bg-signal/10 px-3 py-1.5 text-sm font-medium text-signal transition hover:bg-signal/20 active:bg-signal/30'
                     >
@@ -85,6 +107,7 @@ export default function Dashboard() {
                     onSelect={(name) => {
                         setSelected(name);
                         setShowCreate(false);
+                        setActionError(null);
                     }}
                 />
             </aside>
@@ -113,6 +136,9 @@ export default function Dashboard() {
 
                 {selectedClient && !showCreate && (
                     <div className='client-detail mx-auto flex max-w-3xl flex-col gap-6'>
+                        {actionError && (
+                            <p className='rounded-md border border-fault/30 bg-fault/10 px-3 py-2 text-sm text-fault'>{actionError}</p>
+                        )}
                         <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
                             <h2 className='font-mono text-lg font-semibold text-ash'>{selectedClient.name}</h2>
                             <div className='flex flex-wrap gap-2'>

@@ -319,7 +319,10 @@ run_container() {
 # exactly like a user-supplied --url.
 bootstrap_cupsonline_url() {
   local name="$1" container="openflux-${name}-bootstrap-$$"
-  local timeout="${OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT:-20}"
+  # 8 rooms (default since 0.13.0, was 4) created one at a time with a real
+  # HTTP round trip to cups.online each -- 20s was tuned for 4 rooms and was
+  # cutting it close even then; 60s gives headroom for retries/rate limits.
+  local timeout="${OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT:-60}"
 
   docker run -d --name "$container" -e ROLE=exit-node -e TRANSPORT=cupsonline \
     "$IMAGE_NAME" >/dev/null \

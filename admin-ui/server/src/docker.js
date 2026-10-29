@@ -67,7 +67,11 @@ function createDockerClient(dockerode) {
     // "=== COPY THIS TO CLIENT ===" marker lines, capture that line, then remove
     // the container. The caller treats the result exactly like a user-supplied url.
     async function bootstrapCupsonlineUrl(containerName) {
-        const timeoutMs = Number(process.env.OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT || 20) * 1000;
+        // 8 rooms (default since 0.13.0, was 4) created one at a time with a
+        // real HTTP round trip to cups.online each -- 20s was tuned for 4
+        // rooms and was cutting it close even then; 60s gives headroom for
+        // retries/rate limits.
+        const timeoutMs = Number(process.env.OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT || 60) * 1000;
         const container = await dockerode.createContainer({
             name: containerName,
             Image: imageNameFromEnv(),
