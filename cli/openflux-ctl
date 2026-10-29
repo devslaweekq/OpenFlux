@@ -158,6 +158,62 @@ remove_key_file() {
   rm -f "$(key_file_for "$1")"
 }
 
+# links_dir mirrors keys_dir -- same fresh-every-call reasoning.
+links_dir() {
+  printf '%s/links' "$(dirname "$STATE_FILE")"
+}
+
+link_file_for() {
+  printf '%s/%s.link' "$(links_dir)" "$1"
+}
+
+# write_link_file persists a client's openflux:// share link (captured once
+# from the container's own log line) so it can be shown again later without
+# re-deriving it or re-scanning logs.
+write_link_file() {
+  local name="$1" link="$2" dir file
+  dir="$(links_dir)"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  file="$(link_file_for "$name")"
+  printf '%s' "$link" > "$file"
+  chmod 600 "$file"
+}
+
+read_link_file() {
+  local file
+  file="$(link_file_for "$1")"
+  [ -f "$file" ] && cat "$file"
+}
+
+remove_link_file() {
+  rm -f "$(link_file_for "$1")"
+}
+
+# capture_share_link polls a just-started exit container's logs for the bare
+# "openflux://..." line entrypoint.sh's --share prints (see docker/entrypoint.sh),
+# and returns it. The container is already running the real client (unlike
+# bootstrap_cupsonline_url's throwaway), so this is normally near-instant;
+# the timeout is a safety net for a slow cupsonline/avito room-list wait.
+capture_share_link() {
+  local container="$1" timeout="${OPENFLUX_SHARE_LINK_TIMEOUT:-30}"
+  local link="" waited=0
+  while [ "$waited" -lt "$timeout" ]; do
+    link="$(docker logs "$container" 2>&1 | grep -o 'openflux://[^[:space:]]*' | tail -n1)"
+    [ -n "$link" ] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Always return 0: an empty result is "not found yet", not a shell error --
+  # callers check for an empty string, and this function's output is always
+  # captured via `var=$(capture_share_link ...)`, where a non-zero exit
+  # would trip this script's inherited `set -e` and abort the whole command.
+  if [ -n "$link" ]; then
+    printf '%s' "$link"
+  fi
+  return 0
+}
+
 VALID_TRANSPORTS="yandex vyandex boards cupsonline mailru telemost"
 
 validate_transport() {
@@ -405,10 +461,21 @@ cmd_add() {
 
   record_client "$name" "$transport" "$url" "$container" "$mode"
   echo "added client '$name' -> $transport $url ($container)"
-  echo "encryption key for '$name' (give this to the client; save it to a file and run their"
-  echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
-  echo "server at $(key_file_for "$name")):"
-  echo "$key"
+
+  local link
+  link="$(capture_share_link "$container")"
+  if [ -n "$link" ]; then
+    write_link_file "$name" "$link"
+    echo "share link for '$name' (paste into the app -- it carries the encryption key;"
+    echo "also saved on this server at $(link_file_for "$name")):"
+    echo "$link"
+  else
+    echo "warning: couldn't read the share link from '$container' yet -- try 'openflux-ctl logs $name'" >&2
+    echo "encryption key for '$name' (give this to the client; save it to a file and run their"
+    echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
+    echo "server at $(key_file_for "$name")):"
+    echo "$key"
+  fi
 }
 
 cmd_remove() {
@@ -423,6 +490,7 @@ cmd_remove() {
   container="$(client_row "$name" | cut -f4)"
   docker rm -f "$container" >/dev/null 2>&1 || true
   remove_key_file "$name"
+  remove_link_file "$name"
   remove_client_record "$name"
   echo "removed client '$name'"
 }
@@ -539,10 +607,21 @@ cmd_rekey() {
   write_key_file "$name" "$key"
 
   echo "rekeyed client '$name' ($container)"
-  echo "encryption key for '$name' (give this to the client; save it to a file and run their"
-  echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
-  echo "server at $(key_file_for "$name")):"
-  echo "$key"
+
+  local link
+  link="$(capture_share_link "$container")"
+  if [ -n "$link" ]; then
+    write_link_file "$name" "$link"
+    echo "share link for '$name' (paste into the app -- it carries the new encryption key;"
+    echo "also saved on this server at $(link_file_for "$name")):"
+    echo "$link"
+  else
+    echo "warning: couldn't read the share link from '$container' yet -- try 'openflux-ctl logs $name'" >&2
+    echo "encryption key for '$name' (give this to the client; save it to a file and run their"
+    echo "openflux --role=client with --encryption-key-file=<that file> -- also saved on this"
+    echo "server at $(key_file_for "$name")):"
+    echo "$key"
+  fi
 }
 
 cmd_admin_ui_start() {

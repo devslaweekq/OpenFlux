@@ -67,6 +67,12 @@ fi
 if [ -n "${AVITO_COOKIES:-}" ]; then
   set -- "$@" --avito-cookies "$AVITO_COOKIES"
 fi
+if [ "$role" = exit-node ] && [ "${SHARE:-1}" != "0" ]; then
+  # Prints "openflux://..." (bare, on its own line) once the exit is ready,
+  # so openflux-ctl/admin-ui can scrape it straight out of `docker logs`
+  # instead of reconstructing the link themselves.
+  set -- "$@" --share
+fi
 if [ -n "${LOCAL_IP:-}" ]; then
   # Optional: pin the egress IP (alias IP) so the RST drop could be scoped
   # with `-s <ip>` too; inside a dedicated container netns it's usually

@@ -123,6 +123,17 @@ test('key file round-trip: write, read, remove', () => {
     });
 });
 
+test('link file round-trip: write, read, remove', () => {
+    withTempState(() => {
+        const state = require('../src/state');
+        state.writeLinkFile('dave', 'openflux://v1/deadbeef');
+        assert.equal(state.readLinkFile('dave'), 'openflux://v1/deadbeef');
+        assert.equal(fs.statSync(state.linkFileFor('dave')).mode & 0o777, 0o600);
+        state.removeLinkFile('dave');
+        assert.equal(state.readLinkFile('dave'), null);
+    });
+});
+
 test('generateKey returns a 64-char hex string, distinct each call', () => {
     const state = require('../src/state');
     const a = state.generateKey();

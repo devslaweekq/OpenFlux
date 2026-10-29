@@ -122,6 +122,35 @@ function createDockerClient(dockerode) {
         return url;
     }
 
+    // captureShareLink polls a just-started (real, non-throwaway) exit
+    // container's logs for the bare "openflux://..." line entrypoint.sh's
+    // --share prints by default, and returns it. tail:200 covers the line
+    // even if it was printed in the instant before this started following.
+    async function captureShareLink(containerName) {
+        const timeoutMs = Number(process.env.OPENFLUX_SHARE_LINK_TIMEOUT ?? 30) * 1000;
+        const container = dockerode.getContainer(containerName);
+        let buffered = '';
+        let link = '';
+        const stream = await container.logs({ follow: true, stdout: true, stderr: true, tail: 200 });
+        const sink = {
+            write: (chunk) => {
+                buffered += chunk.toString('utf8');
+                if (!link) {
+                    const match = buffered.match(/openflux:\/\/\S+/);
+                    if (match) link = match[0];
+                }
+            },
+        };
+        dockerode.modem.demuxStream(stream, sink, sink);
+
+        const deadline = Date.now() + timeoutMs;
+        while (!link && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        stream.destroy();
+        return link || null;
+    }
+
     async function streamLogs(containerName, onLine, onError) {
         const container = dockerode.getContainer(containerName);
         const stream = await container.logs({
@@ -144,6 +173,7 @@ function createDockerClient(dockerode) {
         startContainer,
         runContainer,
         bootstrapCupsonlineUrl,
+        captureShareLink,
         streamLogs,
     };
 }

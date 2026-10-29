@@ -118,6 +118,42 @@ function removeKeyFile(name) {
     }
 }
 
+// linksDir/linkFileFor mirror keysDir/keyFileFor: the openflux:// share link
+// (captured once from the container's own --share log line) persists next
+// to the key so it can be shown again without re-deriving or re-scanning logs.
+function linksDir() {
+    return path.join(path.dirname(stateFile()), 'links');
+}
+
+function linkFileFor(name) {
+    return path.join(linksDir(), `${name}.link`);
+}
+
+function ensureLinksDir() {
+    fs.mkdirSync(linksDir(), { recursive: true, mode: 0o700 });
+}
+
+function writeLinkFile(name, link) {
+    ensureLinksDir();
+    fs.writeFileSync(linkFileFor(name), link, { mode: 0o600 });
+}
+
+function readLinkFile(name) {
+    try {
+        return fs.readFileSync(linkFileFor(name), 'utf8');
+    } catch {
+        return null;
+    }
+}
+
+function removeLinkFile(name) {
+    try {
+        fs.unlinkSync(linkFileFor(name));
+    } catch {
+        // already gone
+    }
+}
+
 function generateKey() {
     return crypto.randomBytes(32).toString('hex');
 }
@@ -150,6 +186,11 @@ module.exports = {
     writeKeyFile,
     readKeyFile,
     removeKeyFile,
+    linksDir,
+    linkFileFor,
+    writeLinkFile,
+    readLinkFile,
+    removeLinkFile,
     generateKey,
     isValidName,
     isValidTransport,

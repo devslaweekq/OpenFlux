@@ -24,6 +24,9 @@ function fakeDockerClient() {
         async bootstrapCupsonlineUrl() {
             return 'https://cups.online/public/fake-bootstrapped-rooms';
         },
+        async captureShareLink(containerName) {
+            return `openflux://v1/fake-link-for-${containerName}`;
+        },
         async streamLogs(containerName, onLine) {
             // 50ms (not real exit-node pace) so the e2e smoke test's log
             // assertion resolves fast instead of idling through most of a

@@ -23,6 +23,7 @@ export const api = {
     logout: () => request('/logout', { method: 'POST' }),
     listClients: () => request('/clients'),
     getClientUrl: (name) => request(`/clients/${name}/url`),
+    getClientLink: (name) => request(`/clients/${name}/link`),
     createClient: (data) => request('/clients', { method: 'POST', body: JSON.stringify(data) }),
     editClient: (name, data) => request(`/clients/${name}`, { method: 'PUT', body: JSON.stringify(data) }),
     removeClient: (name) => request(`/clients/${name}`, { method: 'DELETE' }),

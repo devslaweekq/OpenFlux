@@ -10,7 +10,7 @@ export default function Dashboard() {
     const [clients, setClients] = useState([]);
     const [selected, setSelected] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
-    const [revealedKey, setRevealedKey] = useState(null);
+    const [revealed, setRevealed] = useState(null);
     const [actionError, setActionError] = useState(null);
 
     async function refresh() {
@@ -26,7 +26,7 @@ export default function Dashboard() {
     async function handleCreate(values) {
         const result = await api.createClient(values);
         setShowCreate(false);
-        setRevealedKey(result.key);
+        setRevealed({ link: result.link, key: result.key });
         await refresh();
     }
 
@@ -36,7 +36,7 @@ export default function Dashboard() {
             url: values.url,
             mode: values.mode,
         });
-        if (result.key) setRevealedKey(result.key);
+        if (result.key) setRevealed({ link: result.link, key: result.key });
         await refresh();
     }
 
@@ -55,7 +55,7 @@ export default function Dashboard() {
         setActionError(null);
         try {
             const result = await api.rekeyClient(name);
-            setRevealedKey(result.key);
+            setRevealed({ link: result.link, key: result.key });
         } catch (err) {
             setActionError(err.message);
         }
@@ -195,7 +195,7 @@ export default function Dashboard() {
                 )}
             </main>
 
-            <KeyRevealModal keyValue={revealedKey} onClose={() => setRevealedKey(null)} />
+            <KeyRevealModal link={revealed?.link} keyValue={revealed?.key} onClose={() => setRevealed(null)} />
         </div>
     );
 }

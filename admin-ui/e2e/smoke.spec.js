@@ -16,7 +16,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
     await page.getByLabel('Document URL').fill('https://cloud.mail.ru/public/AAAA/1111');
     await page.getByRole('button', { name: 'Create client' }).click();
 
-    await expect(page.getByText('Encryption key')).toBeVisible();
+    await expect(page.getByText('Share link')).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByText('alice')).toBeVisible();
 
@@ -27,7 +27,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
     await page.getByLabel('Document URL').fill('https://docs.yandex.ru/edit/d/xyz');
     await page.getByRole('button', { name: 'Create client' }).click();
 
-    await expect(page.getByText('Encryption key')).toBeVisible();
+    await expect(page.getByText('Share link')).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByText('bob')).toBeVisible();
 
@@ -43,7 +43,7 @@ test('login, create two clients, edit one, verify no stale state on selection sw
 
     // Editing returns the existing key again (edit preserves the stored key) -> modal
     // reappears, close it
-    await expect(page.getByText('Encryption key')).toBeVisible();
+    await expect(page.getByText('Share link')).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
 
     // List reflects the edit

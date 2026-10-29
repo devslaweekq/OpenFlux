@@ -13,14 +13,19 @@ export default function ClientList({ clients, onSelect }) {
     const [revealed, setRevealed] = useState({});
 
     async function reveal(name) {
-        const { url } = await api.getClientUrl(name);
-        setRevealed((prev) => ({ ...prev, [name]: url }));
-        return url;
+        // The share link carries the encryption key, so it's the one thing
+        // worth pasting into the app -- fall back to the bare document url
+        // only for clients created before this existed, or if capturing the
+        // link failed at create time.
+        const { link } = await api.getClientLink(name);
+        const value = link || (await api.getClientUrl(name)).url;
+        setRevealed((prev) => ({ ...prev, [name]: value }));
+        return value;
     }
 
     async function copy(name) {
-        const url = revealed[name] || (await reveal(name));
-        await navigator.clipboard.writeText(url);
+        const value = revealed[name] || (await reveal(name));
+        await navigator.clipboard.writeText(value);
     }
 
     if (clients.length === 0) {

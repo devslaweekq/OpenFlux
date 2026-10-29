@@ -112,6 +112,42 @@ test('POST /api/clients creates a client, returns the key once, records state', 
     }
 });
 
+test('POST /api/clients captures and persists the share link when the docker client provides one', async () => {
+    const dir = freshState();
+    try {
+        const { client } = fakeDockerClient();
+        client.captureShareLink = async () => 'openflux://v1/deadbeef';
+        const { app, state } = buildApp(client);
+
+        const res = await request(app).post('/api/clients').send({ name: 'carol', transport: 'yandex', url: 'https://doc' });
+
+        assert.equal(res.status, 201);
+        assert.equal(res.body.link, 'openflux://v1/deadbeef');
+        assert.equal(state.readLinkFile('carol'), 'openflux://v1/deadbeef');
+
+        const linkRes = await request(app).get('/api/clients/carol/link');
+        assert.equal(linkRes.status, 200);
+        assert.equal(linkRes.body.link, 'openflux://v1/deadbeef');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('POST /api/clients still succeeds, with no link, when captureShareLink is missing or throws', async () => {
+    const dir = freshState();
+    try {
+        const { client } = fakeDockerClient();
+        const { app } = buildApp(client);
+
+        const res = await request(app).post('/api/clients').send({ name: 'carol', transport: 'yandex', url: 'https://doc' });
+
+        assert.equal(res.status, 201);
+        assert.equal(res.body.link, null);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('POST /api/clients rejects an invalid name/transport before touching docker', async () => {
     const dir = freshState();
     try {

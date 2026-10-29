@@ -2,6 +2,21 @@
 const express = require('express');
 const state = require('../state');
 
+// captureAndStoreLink reads the container's "openflux://..." --share line
+// and persists it. A failure here (timeout, old dockerClient double without
+// the method, anything) never fails the caller's request -- the client was
+// already created/edited/rekeyed successfully; the link is a convenience on
+// top, and the UI falls back to the raw key when it's missing.
+async function captureAndStoreLink(dockerClient, name, containerName) {
+    try {
+        const link = await dockerClient.captureShareLink(containerName);
+        if (link) state.writeLinkFile(name, link);
+        return link || null;
+    } catch {
+        return null;
+    }
+}
+
 function createClientsRouter(dockerClient) {
     const router = express.Router();
 
@@ -31,6 +46,15 @@ function createClientsRouter(dockerClient) {
             return;
         }
         res.json({ url: client.url });
+    });
+
+    router.get('/:name/link', (req, res) => {
+        const client = state.readClients().find((c) => c.name === req.params.name);
+        if (!client) {
+            res.status(404).json({ error: `client '${req.params.name}' not found` });
+            return;
+        }
+        res.json({ link: state.readLinkFile(req.params.name) });
     });
 
     router.post('/', async (req, res) => {
@@ -107,7 +131,8 @@ function createClientsRouter(dockerClient) {
             container: containerName,
             mode,
         });
-        res.status(201).json({ name, transport, url, container: containerName, created, mode, key });
+        const link = await captureAndStoreLink(dockerClient, name, containerName);
+        res.status(201).json({ name, transport, url, container: containerName, created, mode, key, link });
     });
 
     router.put('/:name', async (req, res) => {
@@ -167,6 +192,7 @@ function createClientsRouter(dockerClient) {
             return;
         }
         state.replaceClientFields(name, { transport, url, mode });
+        const link = await captureAndStoreLink(dockerClient, name, existing.container);
         res.json({
             name,
             transport,
@@ -174,6 +200,7 @@ function createClientsRouter(dockerClient) {
             mode,
             container: existing.container,
             key: key || undefined,
+            link,
         });
     });
 
@@ -196,6 +223,7 @@ function createClientsRouter(dockerClient) {
             return;
         }
         state.removeKeyFile(name);
+        state.removeLinkFile(name);
         state.removeClient(name);
         res.json({ ok: true });
     });
@@ -268,7 +296,8 @@ function createClientsRouter(dockerClient) {
             return;
         }
         state.writeKeyFile(name, key);
-        res.json({ name, key });
+        const link = await captureAndStoreLink(dockerClient, name, existing.container);
+        res.json({ name, key, link });
     });
 
     return router;

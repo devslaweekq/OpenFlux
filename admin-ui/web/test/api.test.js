@@ -38,6 +38,17 @@ test('listClients calls GET /api/clients', async () => {
     assert.deepEqual(clients, [{ name: 'alice' }]);
 });
 
+test('getClientLink calls GET /api/clients/:name/link', async () => {
+    global.fetch = async (url, opts) => {
+        assert.equal(url, '/api/clients/alice/link');
+        assert.equal(opts.method, undefined);
+        return { ok: true, status: 200, json: async () => ({ link: 'openflux://v1/deadbeef' }) };
+    };
+    const { api } = await import('../src/api.js');
+    const result = await api.getClientLink('alice');
+    assert.deepEqual(result, { link: 'openflux://v1/deadbeef' });
+});
+
 test('stopClient posts to /api/clients/:name/stop', async () => {
     global.fetch = async (url, opts) => {
         assert.equal(url, '/api/clients/alice/stop');

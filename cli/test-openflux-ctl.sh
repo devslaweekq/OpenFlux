@@ -7,6 +7,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILURES=0
 
+# The fake docker stub never prints a real "openflux://..." line, so
+# capture_share_link's poll loop (cmd_add/cmd_rekey) would otherwise wait
+# out its full timeout on every single test that exercises either command.
+export OPENFLUX_SHARE_LINK_TIMEOUT=0
+
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$expected" = "$actual" ]; then
