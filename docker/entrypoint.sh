@@ -25,28 +25,18 @@ case "$role" in
 esac
 
 case "$transport" in
-  yandex|vyandex|oneme|cupsonline|avito|mailru|telemost) ;;
+  yandex|vyandex|boards|mailru|cupsonline|oneme|cupsonline|avito|mailru|telemost) ;;
   *)
-    echo "TRANSPORT must be one of yandex, vyandex, oneme, cupsonline, avito, mailru, telemost (got '$transport')" >&2
+    echo "TRANSPORT must be one of yandex, vyandex, boards, mailru, cupsonline, oneme (got '$transport')" >&2
     exit 2
     ;;
 esac
 
-case "$mode" in
-  l3|l4) ;;
-  *)
-    echo "MODE must be 'l3' or 'l4' (got '$mode')" >&2
-    exit 2
-    ;;
-esac
-
-# openflux's own --role values are client|exit (--exit-node is a deprecated
-# alias that logs a warning on every start and may be removed upstream).
+core_role=client
 if [ "$role" = exit-node ]; then
-  set -- --role exit --transport "$transport" --mode "$mode"
-else
-  set -- --role client --transport "$transport"
+  core_role=exit
 fi
+set -- --role "$core_role" --transport "$transport"
 
 if [ "$role" = client ]; then
   set -- "$@" --socks5 "$listen"
