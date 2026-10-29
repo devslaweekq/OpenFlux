@@ -324,7 +324,12 @@ bootstrap_cupsonline_url() {
   # cutting it close even then; 60s gives headroom for retries/rate limits.
   local timeout="${OPENFLUX_CUPSONLINE_BOOTSTRAP_TIMEOUT:-60}"
 
-  docker run -d --name "$container" -e ROLE=exit-node -e TRANSPORT=cupsonline \
+  # l4: this throwaway container only talks HTTPS to cups.online to create
+  # rooms, never carries real tunnel traffic, so it doesn't need (and
+  # shouldn't ask for) NET_RAW/NET_ADMIN -- l3's RST-drop iptables rule would
+  # just fail loudly (or silently, on hosts that can't grant it) for no
+  # benefit here.
+  docker run -d --name "$container" -e ROLE=exit-node -e TRANSPORT=cupsonline -e MODE=l4 \
     "$IMAGE_NAME" >/dev/null \
     || { echo "error: failed to start cupsonline room-bootstrap container" >&2; return 1; }
 

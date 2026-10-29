@@ -75,7 +75,12 @@ function createDockerClient(dockerode) {
         const container = await dockerode.createContainer({
             name: containerName,
             Image: imageNameFromEnv(),
-            Env: ['ROLE=exit-node', 'TRANSPORT=cupsonline'],
+            // l4: this throwaway container only talks HTTPS to cups.online to
+            // create rooms, never carries real tunnel traffic, so it doesn't
+            // need (and shouldn't ask for) NET_RAW/NET_ADMIN -- l3's RST-drop
+            // iptables rule would just fail loudly (or silently, on hosts that
+            // can't grant it) for no benefit here.
+            Env: ['ROLE=exit-node', 'TRANSPORT=cupsonline', 'MODE=l4'],
         });
         await container.start();
 
