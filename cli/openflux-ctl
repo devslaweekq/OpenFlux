@@ -30,7 +30,7 @@ Commands:
   admin-ui start                           Start the web dashboard (asks to set a password on first run)
   admin-ui stop                            Stop the web dashboard
 
-Transports: yandex, vyandex, cupsonline, mailru, telemost (experimental)
+Transports: yandex, vyandex, boards, cupsonline, mailru, telemost (experimental)
 Modes:      l3 (default), l4
 USAGE
 }
@@ -158,7 +158,7 @@ remove_key_file() {
   rm -f "$(key_file_for "$1")"
 }
 
-VALID_TRANSPORTS="yandex vyandex cupsonline mailru telemost"
+VALID_TRANSPORTS="yandex vyandex boards cupsonline mailru telemost"
 
 validate_transport() {
   local t="$1" vt

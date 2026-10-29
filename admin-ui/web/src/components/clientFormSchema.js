@@ -1,5 +1,5 @@
 // admin-ui/web/src/components/clientFormSchema.js
-export const TRANSPORTS = ['yandex', 'vyandex', 'cupsonline', 'mailru', 'telemost'];
+export const TRANSPORTS = ['yandex', 'vyandex', 'boards', 'cupsonline', 'mailru', 'telemost'];
 export const MODES = ['l3', 'l4'];
 const NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 

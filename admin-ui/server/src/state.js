@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VALID_TRANSPORTS = ['yandex', 'vyandex', 'cupsonline', 'mailru', 'telemost'];
+const VALID_TRANSPORTS = ['yandex', 'vyandex', 'boards', 'cupsonline', 'mailru', 'telemost'];
 
 const VALID_MODES = ['l3', 'l4'];
 const DEFAULT_MODE = 'l3';
